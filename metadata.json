@@ -1,0 +1,6 @@
+{
+  "name": "Dr. P. Alikutty's Hospital - Onam Grand Quiz Challenge",
+  "description": "Real-time individual multiplayer Onam quiz challenge with synchronous 20-second questions, speed-decay scoring system, and live competitive leaderboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

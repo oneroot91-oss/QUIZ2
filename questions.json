@@ -1,0 +1,197 @@
+[
+  {
+    "id": 1,
+    "question": "In which year was Onam officially declared as the state festival of Kerala?",
+    "options": [
+      "1956",
+      "1961",
+      "1965",
+      "1970"
+    ],
+    "correctIndex": 1,
+    "explanation": "The Government of Kerala officially declared Onam as the National Festival of Kerala in 1961.",
+    "category": "History & Heritage"
+  },
+  {
+    "id": 2,
+    "question": "Which historic town in Kerala is famous for launching Onam with the \"Athachamayam\" street parade?",
+    "options": [
+      "Thrikkakara",
+      "Thripunithura",
+      "Thrissur",
+      "Aranmula"
+    ],
+    "correctIndex": 1,
+    "explanation": "Athachamayam at Thripunithura (Kochi) commemorates the royal victory march of the Maharaja of Cochin and marks the grand beginning of the 10-day Onam festivities.",
+    "category": "Festivals & Royalty"
+  },
+  {
+    "id": 3,
+    "question": "Which flower is mandatory for building the first layer of Pookkalam on Atham day?",
+    "options": [
+      "Chetti Poovu",
+      "Thumba Poovu",
+      "Arali",
+      "Chemparathi"
+    ],
+    "correctIndex": 1,
+    "explanation": "Thumba Poovu (Lucas aspera), a small white wildflower, is sacred and traditionally placed at the center and first layer of the floral carpet on Atham.",
+    "category": "Traditions & Botany"
+  },
+  {
+    "id": 4,
+    "question": "Which temple in Kerala is dedicated to Lord Vamana and considered the epicenter of Onam?",
+    "options": [
+      "Guruvayur",
+      "Thrikkakara",
+      "Ambalappuzha",
+      "Sabarimala"
+    ],
+    "correctIndex": 1,
+    "explanation": "Thrikkakara Temple near Kochi is one of the rare temples dedicated to Vamana Murthi and is closely linked with the Mahabali legend and Onam celebrations.",
+    "category": "Mythology & Temples"
+  },
+  {
+    "id": 5,
+    "question": "On which star day is the famous Aranmula Snake Boat Race held?",
+    "options": [
+      "Atham",
+      "Uthradam",
+      "Uthrattathi",
+      "Thiruvonam"
+    ],
+    "correctIndex": 2,
+    "explanation": "The famous Aranmula Uthrattathi Vallamkali (Snake Boat Race) is conducted on the Uthrattathi asterism in the Malayalam month of Chingam on the holy Pampa River.",
+    "category": "Sports & River Culture"
+  },
+  {
+    "id": 6,
+    "question": "What is the pyramid-shaped clay figure worshipped in homes during Onam called?",
+    "options": [
+      "Thrikkakara Appan / Onathappan",
+      "Kummatti",
+      "Kathakali Kolam",
+      "Pulikali Appan"
+    ],
+    "correctIndex": 0,
+    "explanation": "Thrikkakara Appan (or Onathappan) are pyramid-shaped clay structures representing Lord Vamana and King Mahabali installed in courtyards during Onam.",
+    "category": "Rituals & Customs"
+  },
+  {
+    "id": 7,
+    "question": "What ceremonial painted wooden bow is offered at Padmanabhaswamy Temple during Onam?",
+    "options": [
+      "Onapillai",
+      "Onavillu",
+      "Onavallam",
+      "Onakodi"
+    ],
+    "correctIndex": 1,
+    "explanation": "Onavillu is a ceremonial broad piece of mahogany or kadambu wood painted with deities by traditional artisans and offered at the Sree Padmanabhaswamy Temple on Thiruvonam.",
+    "category": "Temple Arts"
+  },
+  {
+    "id": 8,
+    "question": "Complete the proverb: \"_____ vittum Onam unnanam\"?",
+    "options": [
+      "Ari",
+      "Kanam",
+      "Veedu",
+      "Ponn"
+    ],
+    "correctIndex": 1,
+    "explanation": "\"Kanam vittum Onam unnanam\" means \"One must feast on Onam even if one has to sell one's landed property (Kanam)\", emphasizing the joy of celebration regardless of hardship.",
+    "category": "Literature & Folklore"
+  },
+  {
+    "id": 9,
+    "question": "Pulikali (Tiger Dance) in Thrissur Swaraj Round is performed on which day of Onam?",
+    "options": [
+      "Atham",
+      "First Onam",
+      "Fourth Onam",
+      "Thiruvonam"
+    ],
+    "correctIndex": 2,
+    "explanation": "Pulikali (Play of the Tigers) is performed in the Thrissur Swaraj Round on the 4th Onam day (Nalaam Onam), showcasing performers painted like tigers and leopards.",
+    "category": "Folk Arts & Spectacles"
+  },
+  {
+    "id": 10,
+    "question": "In the 10-day sequence from Atham, which star represents the 5th day?",
+    "options": [
+      "Chodi",
+      "Visakam",
+      "Anizham",
+      "Pooradam"
+    ],
+    "correctIndex": 2,
+    "explanation": "The 10 stars of Onam in order are: 1. Atham, 2. Chithira, 3. Chodhi, 4. Vishakam, 5. Anizham, 6. Thrikketa, 7. Moolam, 8. Pooradam, 9. Uthradam, 10. Thiruvonam.",
+    "category": "Astronomy & Calendar"
+  },
+  {
+    "id": 11,
+    "question": "What is the traditional bare-chested martial duel played during Onam called?",
+    "options": [
+      "Kalari Payattu",
+      "Onathallu / Kayyankali",
+      "Vadamvali",
+      "Kambathallu"
+    ],
+    "correctIndex": 1,
+    "explanation": "Onathallu (also called Kayyankali) is a traditional bare-handed combat sport where combatants fight in a circle following strict ancient codes during Onam.",
+    "category": "Martial Arts & Games"
+  },
+  {
+    "id": 12,
+    "question": "When serving Onam Sadya, which way should the narrow end of the banana leaf face?",
+    "options": [
+      "Right of guest",
+      "Left of guest",
+      "Towards guest",
+      "Away from guest"
+    ],
+    "correctIndex": 1,
+    "explanation": "In traditional Kerala Sadya etiquette, the plantain leaf is placed with its tapering / narrow tip pointed towards the diner's left hand side.",
+    "category": "Gastronomy & Etiquette"
+  },
+  {
+    "id": 13,
+    "question": "Which traditional women's folk dance performed in a circle during Onam is named after a dragon-fly?",
+    "options": [
+      "Thiruvathirakali",
+      "Thumbi Thullal",
+      "Margamkali",
+      "Oppana"
+    ],
+    "correctIndex": 1,
+    "explanation": "Thumbi Thullal is an ancient folk ritual dance performed exclusively by women dressed in Onakkodi seated in a circle around a lead dancer representing a dragonfly (Thumbi).",
+    "category": "Dance & Music"
+  },
+  {
+    "id": 14,
+    "question": "What is the 9th day of Onam (Uthradam) popularly known as?",
+    "options": [
+      "First Onam",
+      "Main Onam",
+      "Third Onam",
+      "Rendam Onam"
+    ],
+    "correctIndex": 0,
+    "explanation": "Uthradam is traditionally celebrated as 'Onnam Onam' (First Onam) or Uthrada Pachil, while Thiruvonam is the main celebration (Rendam Onam).",
+    "category": "Calendar Traditions"
+  },
+  {
+    "id": 15,
+    "question": "What is the traditional wooden swing decorated with flowers set up during Onam called?",
+    "options": [
+      "Pookkalam",
+      "Oonjal",
+      "Onavillu",
+      "Vallam"
+    ],
+    "correctIndex": 1,
+    "explanation": "Oonjal (or Ona-oonjal) is the traditional flower-decked rope or wooden swing suspended from high boughs of trees in home courtyards during Onam.",
+    "category": "Celebrations & Play"
+  }
+]

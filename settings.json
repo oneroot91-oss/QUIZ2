@@ -1,0 +1,13 @@
+{
+  "quizEnabled": true,
+  "allowSubmissions": true,
+  "adminEntryEnabled": true,
+  "adminPassword": "Admin@1965#IT",
+  "questionDuration": 20,
+  "maxPointsPerQuestion": 5,
+  "autoAdvance": true,
+  "autoAdvanceDelay": 6,
+  "globalParticipantLimit": 5,
+  "departmentOverrides": {},
+  "departmentBonuses": {}
+}
