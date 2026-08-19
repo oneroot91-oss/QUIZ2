@@ -17,11 +17,13 @@ import { GameState, Player } from "../types";
 import { PookkalamArt } from "./PookkalamArt";
 
 interface LandingPageProps {
-  currentPlayer: Player | null;
+  currentPlayer?: Player | null;
   gameState: GameState;
-  onJoinGame: (name: string) => Promise<void>;
-  onStartPlaying: () => void;
+  onJoinGame?: (name: string) => Promise<void> | void;
+  onJoinQuiz?: (name: string) => Promise<void> | void;
+  onStartPlaying?: () => void;
   onViewLeaderboard: () => void;
+  savedPlayerName?: string;
   isJoining?: boolean;
 }
 
@@ -29,11 +31,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   currentPlayer,
   gameState,
   onJoinGame,
+  onJoinQuiz,
   onStartPlaying,
   onViewLeaderboard,
+  savedPlayerName,
   isJoining = false,
 }) => {
-  const [name, setName] = useState(currentPlayer?.name || "");
+  const [name, setName] = useState(currentPlayer?.name || savedPlayerName || "");
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -44,7 +48,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     }
     setError(null);
     try {
-      await onJoinGame(name.trim());
+      const joinAction = onJoinGame || onJoinQuiz;
+      if (typeof joinAction === "function") {
+        await joinAction(name.trim());
+      } else {
+        console.warn("No join handler provided");
+      }
     } catch (err: any) {
       setError(err?.message || "Failed to register. Please try again.");
     }

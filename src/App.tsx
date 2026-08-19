@@ -190,9 +190,12 @@ export default function App() {
       <main className="flex-1">
         {currentView === "landing" && (
           <LandingPage
-            onJoinQuiz={handleJoinMatch}
-            onViewLeaderboard={() => setCurrentView("leaderboard")}
+            currentPlayer={currentPlayer}
             gameState={gameState}
+            onJoinGame={handleJoinMatch}
+            onJoinQuiz={handleJoinMatch}
+            onStartPlaying={() => setCurrentView("quiz")}
+            onViewLeaderboard={() => setCurrentView("leaderboard")}
             savedPlayerName={currentPlayer?.name}
           />
         )}
