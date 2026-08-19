@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Trophy,
   Medal,
@@ -42,6 +42,32 @@ export const LeaderboardPage: React.FC<LeaderboardPageProps> = ({
   const toggleExpand = (id: string) => {
     setExpandedPlayerId((prev) => (prev === id ? null : id));
   };
+
+  // Live Auto-Refresh polling (every 2 seconds and on local storage update)
+  useEffect(() => {
+    onRefresh();
+    const interval = setInterval(() => {
+      onRefresh();
+    }, 2000);
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "onam_quiz_players_list" || e.key === "onam_quiz_game_state") {
+        onRefresh();
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+
+    const handleFocus = () => {
+      onRefresh();
+    };
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [onRefresh]);
 
   const filteredData = leaderboardData.filter((p) =>
     p.name.toLowerCase().includes(searchTerm.toLowerCase())
@@ -144,6 +170,57 @@ export const LeaderboardPage: React.FC<LeaderboardPageProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Live Highest Scorer Spotlight Banner */}
+        {leaderboardData.length > 0 && leaderboardData[0] && (
+          <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-amber-800 via-amber-900 to-amber-950 text-white p-6 sm:p-7 shadow-2xl border-2 border-amber-400/50">
+            <div className="absolute top-0 right-0 -mt-8 -mr-8 opacity-25 pointer-events-none">
+              <PookkalamArt size={220} />
+            </div>
+
+            <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
+              <div className="space-y-2">
+                <div className="inline-flex items-center gap-2 bg-amber-400/20 border border-amber-300/40 px-3.5 py-1 rounded-full text-xs font-bold tracking-wider text-amber-200 uppercase">
+                  <span className="text-sm">👑</span>
+                  <span>Currently Highest Scoring Participant</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                </div>
+
+                <div>
+                  <h2 className="text-2xl sm:text-3xl font-black text-amber-100 flex items-center gap-2.5 flex-wrap">
+                    <span>{leaderboardData[0].name}</span>
+                    <span className="text-xs bg-amber-400 text-amber-950 font-black px-3 py-1 rounded-full shadow-md">
+                      Rank #1 Leader
+                    </span>
+                  </h2>
+                  <p className="text-xs text-amber-200/90 mt-1.5 flex items-center gap-2 flex-wrap">
+                    <span>
+                      Correct Answers: <strong className="text-white font-mono">{leaderboardData[0].correctCount} / {leaderboardData[0].answeredCount || leaderboardData[0].correctCount}</strong>
+                    </span>
+                    <span>•</span>
+                    <span>
+                      Accuracy: <strong className="text-emerald-300 font-mono">
+                        {leaderboardData[0].answeredCount ? Math.round((leaderboardData[0].correctCount / leaderboardData[0].answeredCount) * 100) : 100}%
+                      </strong>
+                    </span>
+                    <span>•</span>
+                    <span className="text-amber-300/80">Live auto-refresh enabled</span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-amber-950/90 border-2 border-amber-400/50 rounded-2xl p-4 sm:px-6 text-center shrink-0 shadow-xl">
+                <span className="text-[11px] text-amber-300 font-bold uppercase tracking-wider block">
+                  Top Score
+                </span>
+                <strong className="text-3xl sm:text-4xl font-black text-yellow-300 font-mono">
+                  {leaderboardData[0].totalScore.toFixed(2)}
+                  <span className="text-sm font-normal text-amber-200 ml-1">pts</span>
+                </strong>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Podium Highlight (Top 3 Individual Players) */}
         {leaderboardData.length >= 3 && leaderboardData[0].totalScore > 0 && (

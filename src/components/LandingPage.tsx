@@ -289,6 +289,28 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               </span>
             </div>
 
+            {topPlayers.length > 0 && topPlayers[0] && (
+              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 text-white shadow-md flex items-center justify-between border border-amber-400/40">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-2xl">👑</span>
+                  <div>
+                    <span className="text-[10px] font-bold text-amber-200 uppercase tracking-wider block">
+                      Current Highest Scorer
+                    </span>
+                    <strong className="text-sm font-extrabold text-white block">
+                      {topPlayers[0].name}
+                    </strong>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] text-amber-200 block">Score</span>
+                  <strong className="text-base font-black text-yellow-300 font-mono">
+                    {topPlayers[0].totalScore.toFixed(2)} <span className="text-xs font-normal">pts</span>
+                  </strong>
+                </div>
+              </div>
+            )}
+
             {topPlayers.length === 0 ? (
               <div className="py-10 text-center text-stone-400 space-y-2">
                 <Users className="w-8 h-8 mx-auto opacity-40" />

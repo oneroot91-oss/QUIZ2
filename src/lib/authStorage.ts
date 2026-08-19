@@ -4,6 +4,7 @@
  */
 
 export const MASTER_RECOVERY_PASSCODE = "0099887766";
+export const ADMIN_RECOVERY_PASSCODE = MASTER_RECOVERY_PASSCODE;
 export const DEFAULT_ADMIN_PASSWORD = "Admin@1965#IT";
 
 const STORAGE_KEY_ADMIN_PASSWORD = "onam_quiz_admin_password";

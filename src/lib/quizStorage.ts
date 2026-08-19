@@ -162,11 +162,12 @@ export function submitLocalAnswer(
   let scoreEarned = 0;
 
   if (isCorrect) {
-    // 20-second speed-decay scoring: between 2.00 and 5.00 points
+    // Speed-decay scoring: 5.00 * (timeRemaining / duration)
     const settings = getLocalSettings();
     const duration = settings.questionDuration || 20;
+    const maxPoints = settings.maxPointsPerQuestion || 5;
     const ratio = Math.max(0, Math.min(1, timeRemaining / duration));
-    scoreEarned = Math.round((2.0 + 3.0 * ratio) * 100) / 100;
+    scoreEarned = Math.round((maxPoints * ratio) * 100) / 100;
   }
 
   if (!player.answers) player.answers = {};

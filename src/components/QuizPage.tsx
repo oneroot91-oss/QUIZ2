@@ -1,23 +1,32 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Clock,
+  Timer,
   Zap,
   CheckCircle2,
   XCircle,
   ShieldAlert,
   Lock,
-  Timer,
   Tag,
   Trophy,
-  Users,
   ArrowRight,
   Flame,
   Ban,
   Sparkles,
-  Award
+  Award,
+  ChevronRight,
+  HelpCircle
 } from "lucide-react";
-import { GameState, Player, Question, calculateSpeedScore, MAX_POINTS_PER_QUESTION, DEFAULT_QUESTION_DURATION } from "../types";
+import {
+  GameState,
+  Player,
+  Question,
+  calculateSpeedScore,
+  DEFAULT_QUESTION_DURATION,
+  MAX_POINTS_PER_QUESTION,
+} from "../types";
 import { PookkalamArt } from "./PookkalamArt";
+import { getLocalQuestions } from "../lib/quizStorage";
+import { DEFAULT_QUESTIONS } from "../data/defaultQuestions";
 
 interface QuizPageProps {
   currentPlayer: Player;
@@ -31,27 +40,75 @@ interface QuizPageProps {
 export const QuizPage: React.FC<QuizPageProps> = ({
   currentPlayer,
   gameState,
-  timeRemaining,
   onSubmitAnswer,
   onFinishQuiz,
   onExitToLobby,
 }) => {
-  const currentQ = gameState.currentQuestion;
-  const currentQId = currentQ?.id ?? 0;
+  // 1. Load questions list
+  const [questionsList, setQuestionsList] = useState<Question[]>(() => {
+    const local = getLocalQuestions();
+    return local && local.length > 0 ? local : DEFAULT_QUESTIONS;
+  });
 
-  // Track player selection for current question
+  // Try to fetch updated questions from server
+  useEffect(() => {
+    fetch("/api/questions")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setQuestionsList(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // 2. Sequential Question Index
+  // Check if player has already answered some questions to resume properly
+  const [currentQIndex, setCurrentQIndex] = useState<number>(() => {
+    if (!currentPlayer.answers) return 0;
+    const answeredCount = Object.keys(currentPlayer.answers).length;
+    return Math.min(answeredCount, Math.max(0, questionsList.length - 1));
+  });
+
+  const currentQ = questionsList[currentQIndex] || questionsList[0];
+  const currentQId = currentQ?.id ?? 1;
+  const totalQuestions = questionsList.length;
+  const questionNumber = currentQIndex + 1;
+  const isLastQuestion = currentQIndex >= totalQuestions - 1;
+
+  // 3. Precision Countdown Timer State
+  const duration = gameState.questionDuration || DEFAULT_QUESTION_DURATION;
+  const [localTimeRemaining, setLocalTimeRemaining] = useState<number>(duration);
+  const [isTimerActive, setIsTimerActive] = useState<boolean>(true);
+  const startTimeRef = useRef<number>(performance.now());
+  const timerFrameRef = useRef<number | null>(null);
+
+  // 4. Player Selection and Review State
   const existingAnswer = currentPlayer.answers?.[currentQId];
   const [selectedOption, setSelectedOption] = useState<number | null>(
     existingAnswer !== undefined ? existingAnswer.selectedOption : null
   );
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isReviewMode, setIsReviewMode] = useState<boolean>(existingAnswer !== undefined);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [roundFeedback, setRoundFeedback] = useState<{
     score: number;
     isCorrect: boolean;
     timeRemaining: number;
-  } | null>(null);
+  } | null>(
+    existingAnswer
+      ? {
+          score: existingAnswer.score,
+          isCorrect: existingAnswer.isCorrect,
+          timeRemaining: existingAnswer.timeRemaining,
+        }
+      : null
+  );
 
-  // Anti-Cheat & Security State
+  // Auto-advance countdown after answering
+  const [autoAdvanceSeconds, setAutoAdvanceSeconds] = useState<number>(4);
+  const autoAdvanceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Anti-Cheat State
   const [violations, setViolations] = useState(0);
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [showDisqualifiedModal, setShowDisqualifiedModal] = useState(false);
@@ -60,82 +117,187 @@ export const QuizPage: React.FC<QuizPageProps> = ({
   const lastViolationTimeRef = useRef(0);
   const isFinishedRef = useRef(false);
 
-  // Sync selected option when question changes
+  const showSecurityNotice = (msg: string) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setSecurityToast(msg);
+    toastTimeoutRef.current = setTimeout(() => {
+      setSecurityToast(null), 2800;
+    });
+  };
+
+  // -------------------------------------------------------------
+  // High-Precision per-question Timer
+  // -------------------------------------------------------------
+  const handleTimeout = useCallback(async () => {
+    if (selectedOption !== null || isReviewMode || isSubmitting) return;
+
+    setIsTimerActive(false);
+    setSelectedOption(-1);
+    setIsReviewMode(true);
+    setRoundFeedback({
+      score: 0,
+      isCorrect: false,
+      timeRemaining: 0,
+    });
+
+    try {
+      setIsSubmitting(true);
+      await onSubmitAnswer(-1, 0);
+    } catch (e) {
+      // offline fallback handled
+    } finally {
+      setIsSubmitting(false);
+    }
+
+    // Start auto advance
+    startAutoAdvanceTimer();
+  }, [selectedOption, isReviewMode, isSubmitting, onSubmitAnswer]);
+
+  const startAutoAdvanceTimer = () => {
+    setAutoAdvanceSeconds(4);
+    if (autoAdvanceTimerRef.current) clearInterval(autoAdvanceTimerRef.current);
+
+    autoAdvanceTimerRef.current = setInterval(() => {
+      setAutoAdvanceSeconds((prev) => {
+        if (prev <= 1) {
+          if (autoAdvanceTimerRef.current) clearInterval(autoAdvanceTimerRef.current);
+          handleNextQuestion();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  // Run precision timer when current question changes or resets
   useEffect(() => {
     if (existingAnswer !== undefined) {
       setSelectedOption(existingAnswer.selectedOption);
+      setIsReviewMode(true);
+      setIsTimerActive(false);
+      setLocalTimeRemaining(existingAnswer.timeRemaining);
       setRoundFeedback({
         score: existingAnswer.score,
         isCorrect: existingAnswer.isCorrect,
         timeRemaining: existingAnswer.timeRemaining,
       });
-    } else {
-      setSelectedOption(null);
-      setRoundFeedback(null);
+      return;
     }
-  }, [currentQId, existingAnswer]);
 
-  const showSecurityNotice = (msg: string) => {
-    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-    setSecurityToast(msg);
-    toastTimeoutRef.current = setTimeout(() => {
-      setSecurityToast(null);
-    }, 2800);
+    // Start clean timer for new question
+    setSelectedOption(null);
+    setIsReviewMode(false);
+    setRoundFeedback(null);
+    setLocalTimeRemaining(duration);
+    setIsTimerActive(true);
+    startTimeRef.current = performance.now();
+
+    if (autoAdvanceTimerRef.current) {
+      clearInterval(autoAdvanceTimerRef.current);
+    }
+
+    const interval = setInterval(() => {
+      const elapsed = (performance.now() - startTimeRef.current) / 1000;
+      const remaining = Math.max(0, duration - elapsed);
+      const rounded = Math.round(remaining * 10) / 10;
+      setLocalTimeRemaining(rounded);
+
+      if (remaining <= 0) {
+        clearInterval(interval);
+        handleTimeout();
+      }
+    }, 50);
+
+    return () => {
+      clearInterval(interval);
+      if (autoAdvanceTimerRef.current) clearInterval(autoAdvanceTimerRef.current);
+    };
+  }, [currentQIndex, duration, existingAnswer, handleTimeout]);
+
+  // -------------------------------------------------------------
+  // Option Selection & Speed Score Submission
+  // -------------------------------------------------------------
+  const handleSelectOption = async (index: number) => {
+    if (selectedOption !== null || isReviewMode || isSubmitting) return;
+
+    // Freeze timer instantly
+    setIsTimerActive(false);
+    const elapsed = (performance.now() - startTimeRef.current) / 1000;
+    const exactRemaining = Math.max(0, Math.min(duration, duration - elapsed));
+    const roundedTime = Math.round(exactRemaining * 10) / 10;
+    setLocalTimeRemaining(roundedTime);
+
+    setSelectedOption(index);
+    setIsReviewMode(true);
+    setIsSubmitting(true);
+
+    const isCorrect = index === currentQ.correctIndex;
+    const speedScore = isCorrect
+      ? Math.round((MAX_POINTS_PER_QUESTION * (exactRemaining / duration)) * 100) / 100
+      : 0;
+
+    setRoundFeedback({
+      score: speedScore,
+      isCorrect,
+      timeRemaining: roundedTime,
+    });
+
+    try {
+      await onSubmitAnswer(index, roundedTime);
+    } catch (err) {
+      console.error("Answer submission error:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
+
+    // Trigger auto-advance countdown
+    startAutoAdvanceTimer();
   };
 
   // -------------------------------------------------------------
-  // 1. Tab & App Switch Anti-Cheat Listeners
+  // Move to Next Question or Complete Quiz
+  // -------------------------------------------------------------
+  const handleNextQuestion = () => {
+    if (autoAdvanceTimerRef.current) {
+      clearInterval(autoAdvanceTimerRef.current);
+    }
+
+    if (currentQIndex < totalQuestions - 1) {
+      setCurrentQIndex((prev) => prev + 1);
+    } else {
+      // Completed all questions!
+      isFinishedRef.current = true;
+      onFinishQuiz();
+    }
+  };
+
+  // -------------------------------------------------------------
+  // Anti-Cheat & Security
   // -------------------------------------------------------------
   useEffect(() => {
-    const handleViolation = (type: string) => {
-      if (isFinishedRef.current || gameState.status === "game_over") return;
-
-      const now = Date.now();
-      if (now - lastViolationTimeRef.current < 1200) return;
-      lastViolationTimeRef.current = now;
-
-      setViolations((prev) => {
-        const next = prev + 1;
-        if (next === 1) {
-          setShowWarningModal(true);
-        } else if (next >= 2) {
-          setShowWarningModal(false);
-          setShowDisqualifiedModal(true);
-          // Auto submit currently selected option on 2nd violation
-          setTimeout(() => {
-            if (selectedOption === null && currentQ) {
-              onSubmitAnswer(-1, 0);
-            }
-            onFinishQuiz();
-          }, 2500);
-        }
-        return next;
-      });
-    };
-
     const handleVisibility = () => {
+      if (isFinishedRef.current) return;
       if (document.hidden || document.visibilityState === "hidden") {
-        handleViolation("visibilitychange");
+        const now = Date.now();
+        if (now - lastViolationTimeRef.current < 1500) return;
+        lastViolationTimeRef.current = now;
+
+        setViolations((prev) => {
+          const next = prev + 1;
+          if (next === 1) {
+            setShowWarningModal(true);
+          } else if (next >= 2) {
+            setShowWarningModal(false);
+            setShowDisqualifiedModal(true);
+            setTimeout(() => {
+              onFinishQuiz();
+            }, 2500);
+          }
+          return next;
+        });
       }
     };
 
-    const handleBlur = () => {
-      handleViolation("window.blur");
-    };
-
-    document.addEventListener("visibilitychange", handleVisibility);
-    window.addEventListener("blur", handleBlur);
-
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibility);
-      window.removeEventListener("blur", handleBlur);
-    };
-  }, [selectedOption, currentQ, gameState.status, onSubmitAnswer, onFinishQuiz]);
-
-  // -------------------------------------------------------------
-  // 2. Disable Copy, Paste, DevTools & Right Click
-  // -------------------------------------------------------------
-  useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       showSecurityNotice("🔒 Right-click and context menu are disabled during the quiz.");
@@ -143,91 +305,45 @@ export const QuizPage: React.FC<QuizPageProps> = ({
 
     const handleCopy = (e: ClipboardEvent) => {
       e.preventDefault();
-      showSecurityNotice("🔒 Copying question content is strictly prohibited.");
+      showSecurityNotice("🔒 Copying question content is prohibited.");
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "F12") {
+      if (e.key === "F12" || ((e.ctrlKey || e.metaKey) && ["c", "v", "x", "u", "a", "s", "p"].includes(e.key.toLowerCase()))) {
         e.preventDefault();
-        showSecurityNotice("🔒 Developer tools (F12) are blocked.");
-      }
-      if ((e.ctrlKey || e.metaKey) && ["c", "v", "x", "u", "a", "s", "p"].includes(e.key.toLowerCase())) {
-        e.preventDefault();
-        showSecurityNotice(`🔒 Shortcut (Ctrl+${e.key.toUpperCase()}) is disabled.`);
+        showSecurityNotice("🔒 Inspection shortcuts and copying are disabled.");
       }
     };
 
+    document.addEventListener("visibilitychange", handleVisibility);
     window.addEventListener("contextmenu", handleContextMenu);
     window.addEventListener("copy", handleCopy);
     window.addEventListener("keydown", handleKeyDown);
 
     return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("copy", handleCopy);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, []);
+  }, [onFinishQuiz]);
 
-  // -------------------------------------------------------------
-  // 3. Navigation & Refresh Trap
-  // -------------------------------------------------------------
-  useEffect(() => {
-    window.history.pushState(null, "", window.location.href);
-    const handlePopState = () => {
-      window.history.pushState(null, "", window.location.href);
-      showSecurityNotice("⚠️ Browser navigation is disabled during active quiz.");
-    };
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
-
-  // -------------------------------------------------------------
-  // Option Selection & Speed Score Submission
-  // -------------------------------------------------------------
-  const handleSelectOption = async (index: number) => {
-    if (selectedOption !== null || gameState.status !== "question_active" || isSubmitting) {
-      return;
-    }
-
-    setSelectedOption(index);
-    setIsSubmitting(true);
-
-    try {
-      const result = await onSubmitAnswer(index, timeRemaining);
-      if (result && !result.error) {
-        setRoundFeedback({
-          score: result.score,
-          isCorrect: result.isCorrect,
-          timeRemaining: result.timeRemaining,
-        });
-      }
-    } catch (err) {
-      console.error("Answer submission failed:", err);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // Timer Calculations (20s Countdown)
-  const duration = gameState.questionDuration || DEFAULT_QUESTION_DURATION;
-  const isTimeExpiring = timeRemaining <= 5;
-  const isTimeWarning = timeRemaining <= 10 && !isTimeExpiring;
+  // Visual Timer Ring Metrics
+  const isTimeExpiring = localTimeRemaining <= 5 && isTimerActive;
+  const isTimeWarning = localTimeRemaining <= 10 && !isTimeExpiring && isTimerActive;
   const timerRadius = 20;
   const timerCircumference = 2 * Math.PI * timerRadius;
-  const progressRatio = Math.max(0, Math.min(1, timeRemaining / duration));
+  const progressRatio = Math.max(0, Math.min(1, localTimeRemaining / duration));
   const timerStrokeOffset = timerCircumference - progressRatio * timerCircumference;
 
   // Potential Speed Score Preview
-  const potentialScore = calculateSpeedScore(true, timeRemaining, duration);
-
+  const potentialScore = calculateSpeedScore(true, localTimeRemaining, duration);
   const optionLetters = ["A", "B", "C", "D"];
-  const totalQuestions = gameState.totalQuestions || 15;
-  const questionNumber = gameState.currentQuestionIndex + 1;
   const progressPercent = (questionNumber / totalQuestions) * 100;
 
-  // Current Player Rank in Live Leaderboard
+  // Rank in live leaderboard
   const myRankEntry = gameState.leaderboard.find((entry) => entry.id === currentPlayer.id);
-  const myRank = myRankEntry?.rank ?? "-";
+  const myRank = myRankEntry?.rank ?? 1;
 
   return (
     <div
@@ -245,7 +361,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
           </div>
         )}
 
-        {/* Top Player HUD & Match Status Bar */}
+        {/* Top Player HUD */}
         <div className="bg-white rounded-2xl shadow-sm border border-amber-200/80 p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-3.5 w-full sm:w-auto">
             <div className="w-10 h-10 rounded-xl bg-amber-600 text-white font-bold flex items-center justify-center shadow-xs">
@@ -259,35 +375,22 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                 </span>
               </div>
               <p className="text-xs text-stone-500 font-mono">
-                Total Score: <strong className="text-amber-800 font-bold">{currentPlayer.totalScore.toFixed(2)} pts</strong>
+                Total Points: <strong className="text-amber-800 font-bold">{currentPlayer.totalScore.toFixed(2)} pts</strong>
+                <span className="ml-2 text-stone-400">({currentPlayer.correctCount} Correct)</span>
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end border-t sm:border-t-0 pt-2 sm:pt-0 border-stone-100">
-            {/* Live Anti-Cheat Monitor */}
-            <div className="flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl text-xs font-semibold text-red-800">
-              <Lock className="w-3.5 h-3.5 text-red-600" />
-              <span>Anti-Cheat</span>
-              <span
-                className={`px-1.5 py-0.2 rounded text-[10px] font-mono font-bold ${
-                  violations > 0 ? "bg-red-600 text-white animate-pulse" : "bg-emerald-100 text-emerald-800"
-                }`}
-              >
-                {violations === 0 ? "0/1 Warning" : "1/1 Warning"}
-              </span>
-            </div>
-
-            {/* Live Connected Multiplayer Count */}
+            {/* Anti-Cheat Monitor */}
             <div className="flex items-center gap-1.5 bg-stone-100 text-stone-700 px-3 py-1.5 rounded-xl text-xs font-semibold">
-              <Users className="w-3.5 h-3.5 text-amber-600" />
-              <span>{gameState.connectedPlayersCount} Players Online</span>
+              <Lock className="w-3.5 h-3.5 text-stone-500" />
+              <span>Anti-Cheat Guard Active</span>
             </div>
 
-            {/* Answered Count this round */}
-            <div className="text-xs font-semibold text-stone-600">
-              <span className="text-amber-700 font-bold">{gameState.answeredThisRoundCount}</span> /{" "}
-              {gameState.connectedPlayersCount} Answered
+            {/* Current Question Badge */}
+            <div className="text-xs font-bold text-amber-900 bg-amber-100 px-3 py-1.5 rounded-xl border border-amber-300">
+              Q{questionNumber} of {totalQuestions}
             </div>
           </div>
         </div>
@@ -297,9 +400,9 @@ export const QuizPage: React.FC<QuizPageProps> = ({
           <div className="flex items-center justify-between text-xs text-stone-500 font-medium mb-2">
             <span className="font-bold text-stone-700 flex items-center gap-1.5">
               <span>Question {questionNumber} of {totalQuestions}</span>
-              <span className="text-stone-400">• Synchronous Speed Round</span>
+              <span className="text-stone-400">• Precision Speed Round</span>
             </span>
-            <span className="font-bold text-amber-800">{Math.round(progressPercent)}% Match Progress</span>
+            <span className="font-bold text-amber-800">{Math.round(progressPercent)}% Completed</span>
           </div>
 
           <div className="w-full bg-stone-200 h-2.5 rounded-full overflow-hidden mb-3">
@@ -309,11 +412,14 @@ export const QuizPage: React.FC<QuizPageProps> = ({
             ></div>
           </div>
 
-          {/* Sequential step dots */}
+          {/* Sequential Step Dots */}
           <div className="grid grid-cols-15 gap-1">
             {Array.from({ length: totalQuestions }).map((_, idx) => {
-              const isCurrent = idx === gameState.currentQuestionIndex;
-              const isPast = idx < gameState.currentQuestionIndex;
+              const isCurrent = idx === currentQIndex;
+              const isPast = idx < currentQIndex;
+              const ans = currentPlayer.answers?.[questionsList[idx]?.id];
+              const wasCorrect = ans?.isCorrect;
+
               return (
                 <div
                   key={idx}
@@ -321,7 +427,9 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                     isCurrent
                       ? "bg-amber-600 ring-2 ring-amber-400 shadow scale-110"
                       : isPast
-                      ? "bg-emerald-600"
+                      ? wasCorrect
+                        ? "bg-emerald-600"
+                        : "bg-red-400"
                       : "bg-stone-200"
                   }`}
                   title={`Question ${idx + 1}`}
@@ -331,8 +439,8 @@ export const QuizPage: React.FC<QuizPageProps> = ({
           </div>
         </div>
 
-        {/* Main Question Arena Card */}
-        {currentQ ? (
+        {/* Main Question Card */}
+        {currentQ && (
           <div
             className="bg-white rounded-3xl shadow-xl border-2 border-amber-200/90 overflow-hidden relative"
             id="active-question-card"
@@ -342,7 +450,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
               <PookkalamArt size={220} />
             </div>
 
-            {/* Header: Question Badge, Category & Synchronized 20s Timer */}
+            {/* Header: Question Badge, Category & Synchronized Timer */}
             <div className="bg-gradient-to-r from-amber-900 via-amber-800 to-amber-950 text-amber-50 px-6 py-4 flex items-center justify-between flex-wrap gap-3">
               <div className="flex items-center gap-2.5">
                 <span className="bg-amber-400 text-amber-950 font-extrabold text-xs px-3 py-1.5 rounded-lg shadow-sm">
@@ -356,10 +464,9 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                 )}
               </div>
 
-              {/* Strict 20s Synchronized Countdown Timer & Potential Speed Score */}
+              {/* 20s High-Precision Countdown Timer */}
               <div className="flex items-center gap-3">
-                {/* Live potential score indicator */}
-                {gameState.status === "question_active" && selectedOption === null && (
+                {!isReviewMode && (
                   <div className="hidden sm:flex items-center gap-1.5 bg-amber-950/80 border border-amber-500/30 px-3 py-1.5 rounded-xl text-xs font-mono font-bold text-yellow-300">
                     <Zap className="w-3.5 h-3.5 text-yellow-400 animate-pulse" />
                     <span>Speed Value: +{potentialScore.toFixed(2)} pts</span>
@@ -411,7 +518,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                       {isTimeExpiring ? "Hurry!" : "Countdown"}
                     </div>
                     <div className="font-mono font-black text-base sm:text-lg leading-none">
-                      {timeRemaining.toFixed(1)}s
+                      {localTimeRemaining.toFixed(1)}s
                     </div>
                   </div>
                 </div>
@@ -424,16 +531,12 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                 {currentQ.question}
               </h2>
 
-              {/* Synchronous Options List */}
+              {/* Options List */}
               <div className="space-y-3.5">
                 {currentQ.options.map((optText, optIdx) => {
                   const isSelected = selectedOption === optIdx;
-                  const isLocked = selectedOption !== null || gameState.status !== "question_active";
+                  const isLocked = isReviewMode || selectedOption !== null;
                   const letter = optionLetters[optIdx];
-
-                  // Review reveal mode: reveal correct and wrong choices
-                  const isReviewMode =
-                    gameState.status === "question_review" || gameState.status === "game_over";
                   const isCorrectAnswer = currentQ.correctIndex === optIdx;
 
                   let cardStyle = "bg-white hover:bg-stone-50 border-stone-200 text-stone-800 hover:border-amber-300";
@@ -479,7 +582,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                         )}
                         {isReviewMode && isSelected && !isCorrectAnswer && (
                           <span className="text-[11px] uppercase font-extrabold bg-red-600 text-white px-2.5 py-1 rounded-full flex items-center gap-1 shadow-xs">
-                            <XCircle className="w-3.5 h-3.5" /> Your Pick
+                            <XCircle className="w-3.5 h-3.5" /> Your Choice
                           </span>
                         )}
 
@@ -498,8 +601,8 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                 })}
               </div>
 
-              {/* Cultural Explanation in Review Mode */}
-              {gameState.status === "question_review" && currentQ.explanation && (
+              {/* Cultural Context & Explanation */}
+              {isReviewMode && currentQ.explanation && (
                 <div className="mt-6 p-4 rounded-2xl bg-amber-50/80 border border-amber-300/80 text-xs text-stone-800 space-y-1 animate-fade-in">
                   <strong className="text-amber-900 font-bold flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 text-amber-600" />
@@ -510,15 +613,20 @@ export const QuizPage: React.FC<QuizPageProps> = ({
               )}
             </div>
 
-            {/* Footer Status & Speed Decay Summary */}
+            {/* Footer Actions & Round Score */}
             <div className="bg-stone-50 border-t border-stone-200 px-6 py-4 flex items-center justify-between flex-wrap gap-3">
-              {selectedOption !== null && roundFeedback ? (
+              {isReviewMode && roundFeedback ? (
                 <div className="flex items-center gap-2 text-xs font-bold">
                   {roundFeedback.isCorrect ? (
                     <span className="text-emerald-800 bg-emerald-100 border border-emerald-300 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-xs">
                       <Zap className="w-4 h-4 text-emerald-600 fill-emerald-600" />
-                      <span>Speed Score Awarded: <strong>+{roundFeedback.score.toFixed(2)} pts</strong></span>
-                      <span className="text-emerald-700 font-normal">({roundFeedback.timeRemaining.toFixed(1)}s remaining)</span>
+                      <span>Speed Points Earned: <strong>+{roundFeedback.score.toFixed(2)} pts</strong></span>
+                      <span className="text-emerald-700 font-normal">({roundFeedback.timeRemaining.toFixed(1)}s left)</span>
+                    </span>
+                  ) : selectedOption === -1 ? (
+                    <span className="text-red-800 bg-red-100 border border-red-300 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
+                      <Timer className="w-4 h-4 text-red-600" />
+                      <span>Time Expired (0.00 pts)</span>
                     </span>
                   ) : (
                     <span className="text-red-800 bg-red-100 border border-red-300 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
@@ -527,61 +635,36 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                     </span>
                   )}
                 </div>
-              ) : selectedOption !== null ? (
-                <div className="text-xs font-semibold text-amber-800 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-amber-600" />
-                  <span>Answer recorded! Waiting for round completion...</span>
-                </div>
-              ) : timeRemaining <= 0 ? (
-                <div className="text-xs font-semibold text-red-700 flex items-center gap-1.5">
-                  <Clock className="w-4 h-4 text-red-500" />
-                  <span>Time expired! 0.00 points awarded for this round.</span>
-                </div>
               ) : (
                 <div className="text-xs text-stone-500 flex items-center gap-1.5">
-                  <span>⚡ Select an option fast to maximize your speed-decay points</span>
+                  <Zap className="w-3.5 h-3.5 text-amber-600" />
+                  <span>⚡ Select fast to maximize your speed-decay points (up to 5.00 pts)</span>
                 </div>
               )}
 
-              {/* Round status / Auto Next Indicator */}
-              {gameState.status === "question_review" && (
-                <div className="text-xs font-bold text-amber-900 bg-amber-100 px-3 py-1 rounded-xl border border-amber-300 animate-pulse">
-                  Next question starting shortly...
+              {/* Navigation button */}
+              {isReviewMode && (
+                <div className="flex items-center gap-2 ml-auto">
+                  <button
+                    id="next-question-btn"
+                    onClick={handleNextQuestion}
+                    className="px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs sm:text-sm shadow-md transition-all flex items-center gap-2 cursor-pointer group"
+                  >
+                    <span>{isLastQuestion ? "View Final Results 🏆" : "Next Question"}</span>
+                    <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  </button>
+
+                  <span className="text-[11px] text-stone-400 font-mono">
+                    (Auto in {autoAdvanceSeconds}s)
+                  </span>
                 </div>
               )}
-            </div>
-          </div>
-        ) : (
-          <div className="bg-white rounded-3xl p-12 text-center shadow-xl border border-amber-200/80 space-y-4">
-            <div className="w-16 h-16 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center mx-auto">
-              <Clock className="w-8 h-8 animate-spin text-amber-600" />
-            </div>
-            <h3 className="text-xl font-bold text-stone-900">Synchronizing Live Match...</h3>
-            <p className="text-xs text-stone-500 max-w-md mx-auto">
-              Please wait while the server initializes question synchronization for all connected players.
-            </p>
-          </div>
-        )}
-
-        {/* Live Round Top 3 Speedsters Banner (if in review mode) */}
-        {gameState.status === "question_review" && gameState.lastRoundResults?.topSpeedPlayer && (
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-600 to-yellow-500 text-amber-950 font-bold text-xs sm:text-sm flex items-center justify-between shadow-md border border-amber-400 animate-fade-in">
-            <div className="flex items-center gap-2">
-              <Trophy className="w-5 h-5 text-amber-950" />
-              <span>
-                Round Speed Leader: <strong>{gameState.lastRoundResults.topSpeedPlayer.name}</strong>
-              </span>
-            </div>
-            <div className="font-mono bg-amber-950 text-yellow-300 px-3 py-1 rounded-lg text-xs">
-              +{gameState.lastRoundResults.topSpeedPlayer.score.toFixed(2)} pts ({gameState.lastRoundResults.topSpeedPlayer.timeRemaining.toFixed(1)}s left)
             </div>
           </div>
         )}
       </div>
 
-      {/* ------------------------------------------------------------- */}
-      {/* 1st Security Violation Warning Modal (Tab/App Switch) */}
-      {/* ------------------------------------------------------------- */}
+      {/* 1st Security Violation Warning Modal */}
       {showWarningModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border-2 border-red-500 space-y-4">
@@ -599,13 +682,13 @@ export const QuizPage: React.FC<QuizPageProps> = ({
 
             <div className="p-3.5 bg-red-50/80 rounded-2xl border border-red-200 text-xs text-red-900 leading-relaxed space-y-2">
               <p>
-                <strong>Tab or Application Switch Identified:</strong> You minimized the browser, switched tabs, or opened another application.
+                <strong>Tab or Application Switch Identified:</strong> You minimized the browser or opened another application.
               </p>
               <p>
-                To maintain competitive integrity, <strong>external lookups and AI assistant tools are strictly prohibited</strong>.
+                To maintain fair play, <strong>external lookups are strictly prohibited</strong>.
               </p>
               <p className="font-bold text-red-700">
-                ⚠️ A 2nd violation will disqualify your session and submit your current score.
+                ⚠️ A 2nd violation will terminate your session and submit your score.
               </p>
             </div>
 
@@ -615,16 +698,14 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                 onClick={() => setShowWarningModal(false)}
                 className="w-full py-3 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md transition cursor-pointer flex items-center justify-center gap-2"
               >
-                <span>I Understand • Return to Live Match</span>
+                <span>I Understand • Return to Quiz</span>
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ------------------------------------------------------------- */}
       {/* 2nd Violation Termination Modal */}
-      {/* ------------------------------------------------------------- */}
       {showDisqualifiedModal && (
         <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border-4 border-red-600 space-y-4 text-center">
@@ -633,12 +714,12 @@ export const QuizPage: React.FC<QuizPageProps> = ({
             </div>
 
             <div>
-              <h3 className="text-xl font-extrabold text-red-950">Match Session Terminated</h3>
-              <p className="text-xs text-red-700 font-semibold mt-1">Multiple Anti-Cheat Violations</p>
+              <h3 className="text-xl font-extrabold text-red-950">Session Terminated</h3>
+              <p className="text-xs text-red-700 font-semibold mt-1">Multiple Tab Switch Violations</p>
             </div>
 
             <p className="text-xs text-stone-600 leading-relaxed">
-              A second tab or application switch occurred. Your quiz has been automatically submitted with your current score.
+              A second tab switch occurred. Your quiz has been submitted with your current score.
             </p>
 
             <div className="p-3 bg-stone-100 rounded-xl text-xs font-mono text-stone-700 flex items-center justify-center gap-2">
