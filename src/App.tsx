@@ -9,6 +9,7 @@ import { AdminLoginModal } from "./components/AdminLoginModal";
 import { useRealtimeQuiz } from "./hooks/useRealtimeQuiz";
 import { Player, LeaderboardEntry } from "./types";
 import { Lock } from "lucide-react";
+import { getLocalLeaderboard, getLocalSettings } from "./lib/quizStorage";
 
 export default function App() {
   const [currentView, setCurrentView] = useState<"landing" | "quiz" | "completion" | "leaderboard" | "admin">("landing");
@@ -52,35 +53,51 @@ export default function App() {
     refreshState,
   } = useRealtimeQuiz(currentPlayer?.id);
 
-  // Fetch full Leaderboard and system settings from REST API
+  // Fetch full Leaderboard and system settings with static fallback
   const fetchAllData = useCallback(async () => {
     setIsRefreshing(true);
+    let loadedLeaderboard = false;
+    let loadedSettings = false;
+
     try {
       const lbRes = await fetch("/api/leaderboard");
-      if (lbRes.ok) {
-        const contentType = lbRes.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const lbData = await lbRes.json();
-          setLeaderboardData(lbData.leaderboard || []);
-          setTotalParticipants(lbData.totalParticipants || lbData.leaderboard?.length || 0);
-        }
-      }
-
-      const settingsRes = await fetch("/api/settings");
-      if (settingsRes.ok) {
-        const contentType = settingsRes.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const sData = await settingsRes.json();
-          if (sData.settings?.adminEntryEnabled !== undefined) {
-            setAdminEntryEnabled(Boolean(sData.settings.adminEntryEnabled));
-          }
-        }
+      const contentType = lbRes.headers.get("content-type");
+      if (lbRes.ok && contentType && contentType.includes("application/json")) {
+        const lbData = await lbRes.json();
+        setLeaderboardData(lbData.leaderboard || []);
+        setTotalParticipants(lbData.totalParticipants || lbData.leaderboard?.length || 0);
+        loadedLeaderboard = true;
       }
     } catch (err) {
-      console.error("Failed to fetch quiz leaderboard:", err);
-    } finally {
-      setIsRefreshing(false);
+      // Offline fallback
     }
+
+    try {
+      const settingsRes = await fetch("/api/settings");
+      const contentType = settingsRes.headers.get("content-type");
+      if (settingsRes.ok && contentType && contentType.includes("application/json")) {
+        const sData = await settingsRes.json();
+        if (sData.settings?.adminEntryEnabled !== undefined) {
+          setAdminEntryEnabled(Boolean(sData.settings.adminEntryEnabled));
+        }
+        loadedSettings = true;
+      }
+    } catch (err) {
+      // Offline fallback
+    }
+
+    // Static hosting fallback (InfinityFree / GitHub Pages)
+    if (!loadedLeaderboard) {
+      const localLb = getLocalLeaderboard();
+      setLeaderboardData(localLb);
+      setTotalParticipants(localLb.length);
+    }
+    if (!loadedSettings) {
+      const localSettings = getLocalSettings();
+      setAdminEntryEnabled(localSettings.adminEntryEnabled !== false);
+    }
+
+    setIsRefreshing(false);
   }, []);
 
   useEffect(() => {

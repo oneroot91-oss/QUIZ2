@@ -40,6 +40,19 @@ import {
   setStoredAdminPassword,
   verifyAdminPasswordLocally,
 } from "../lib/authStorage";
+import {
+  getLocalPlayers,
+  saveLocalPlayers,
+  getLocalQuestions,
+  saveLocalQuestions,
+  restoreDefaultLocalQuestions,
+  getLocalSettings,
+  saveLocalSettings,
+  getLocalLeaderboard,
+  getLocalGameState,
+  saveLocalGameState,
+  registerLocalPlayer,
+} from "../lib/quizStorage";
 
 interface AdminPanelProps {
   onBackToQuiz: () => void;
@@ -129,7 +142,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const res = await fetch("/api/admin/overview", {
         headers: { "x-admin-password": authHeader },
       });
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         const data = await res.json();
         setPlayers(data.players || []);
         setQuestions(data.questions?.length ? data.questions : DEFAULT_QUESTIONS);
@@ -139,12 +153,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         return;
       }
     } catch (err) {
-      console.warn("Admin fetch overview network unavailable, using local defaults:", err);
+      // Offline fallback
     }
-    // Fallback default questions if server is offline/static
-    if (questions.length === 0) {
-      setQuestions(DEFAULT_QUESTIONS);
-    }
+
+    // Fallback default state for static hosting (InfinityFree)
+    const localQ = getLocalQuestions();
+    const localP = getLocalPlayers();
+    const localS = getLocalSettings();
+    const localG = getLocalGameState();
+    const localL = getLocalLeaderboard();
+
+    setQuestions(localQ);
+    setPlayers(localP);
+    setSettings(localS);
+    setGameState(localG);
+    setLeaderboard(localL);
   };
 
   // Admin Login with robust fallback
@@ -266,17 +289,66 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         },
         body: JSON.stringify(payload || {}),
       });
-      const data = await res.json();
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
+        const data = await res.json();
         showToast(data.message || `Action ${action} executed successfully.`);
         fetchAdminOverview();
         onRefreshAllData();
-      } else {
-        showToast(data.error || "Failed to execute game command.", "error");
+        return;
       }
     } catch (err) {
-      showToast("Network error executing game command.", "error");
+      // Offline fallback
     }
+
+    // Static hosting local state handler (InfinityFree)
+    const currentQList = getLocalQuestions();
+    const curState = getLocalGameState();
+    const duration = settings.questionDuration || 20;
+
+    if (action === "start") {
+      curState.status = "question_active";
+      curState.currentQuestionIndex = 0;
+      curState.currentQuestion = currentQList[0] || null;
+      curState.questionStartTime = Date.now();
+      curState.questionDuration = duration;
+      showToast("Quiz round started!");
+    } else if (action === "next") {
+      const nextIdx = curState.currentQuestionIndex + 1;
+      if (nextIdx < currentQList.length) {
+        curState.status = "question_active";
+        curState.currentQuestionIndex = nextIdx;
+        curState.currentQuestion = currentQList[nextIdx];
+        curState.questionStartTime = Date.now();
+        curState.questionDuration = duration;
+        showToast(`Advanced to question ${nextIdx + 1}`);
+      } else {
+        curState.status = "game_over";
+        showToast("Quiz completed! Showing final rankings.");
+      }
+    } else if (action === "previous") {
+      const prevIdx = Math.max(0, curState.currentQuestionIndex - 1);
+      curState.status = "question_active";
+      curState.currentQuestionIndex = prevIdx;
+      curState.currentQuestion = currentQList[prevIdx];
+      curState.questionStartTime = Date.now();
+      curState.questionDuration = duration;
+      showToast(`Returned to question ${prevIdx + 1}`);
+    } else if (action === "reveal") {
+      curState.status = "question_review";
+      showToast("Correct answer revealed.");
+    } else if (action === "reset") {
+      curState.status = "lobby";
+      curState.currentQuestionIndex = 0;
+      curState.currentQuestion = currentQList[0] || undefined;
+      curState.questionStartTime = 0;
+      showToast("Game master state reset to lobby.");
+    }
+
+    saveLocalGameState(curState);
+    setGameState(curState);
+    fetchAdminOverview();
+    onRefreshAllData();
   };
 
   // -------------------------------------------------------------
@@ -295,15 +367,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           totalScore: editPlayerScore,
         }),
       });
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         showToast("Participant record updated.");
         setEditingPlayerId(null);
         fetchAdminOverview();
         onRefreshAllData();
+        return;
       }
     } catch (err) {
-      showToast("Failed to save participant changes.", "error");
+      // Offline fallback
     }
+
+    // Static fallback
+    const allPlayers = getLocalPlayers();
+    const p = allPlayers.find((item) => item.id === id);
+    if (p) {
+      p.name = editPlayerName.trim();
+      p.totalScore = Number(editPlayerScore) || 0;
+      saveLocalPlayers(allPlayers);
+    }
+    showToast("Participant record updated.");
+    setEditingPlayerId(null);
+    fetchAdminOverview();
+    onRefreshAllData();
   };
 
   const handleDeletePlayer = async (id: string, name: string) => {
@@ -314,14 +401,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         method: "DELETE",
         headers: { "x-admin-password": passwordInput },
       });
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         showToast(`Removed ${name} from leaderboard.`);
         fetchAdminOverview();
         onRefreshAllData();
+        return;
       }
     } catch (err) {
-      showToast("Failed to delete participant.", "error");
+      // Offline fallback
     }
+
+    // Static fallback
+    const allPlayers = getLocalPlayers().filter((item) => item.id !== id);
+    saveLocalPlayers(allPlayers);
+    showToast(`Removed ${name} from leaderboard.`);
+    fetchAdminOverview();
+    onRefreshAllData();
   };
 
   const handleAddManualPlayer = async (e: React.FormEvent) => {
@@ -340,17 +436,35 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           totalScore: manualScore,
         }),
       });
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         showToast("New participant added to leaderboard.");
         setManualName("");
         setManualScore(0);
         setShowAddPlayerModal(false);
         fetchAdminOverview();
         onRefreshAllData();
+        return;
       }
     } catch (err) {
-      showToast("Failed to add manual participant.", "error");
+      // Offline fallback
     }
+
+    // Static fallback
+    const newPlayer = registerLocalPlayer(manualName.trim());
+    newPlayer.totalScore = Number(manualScore) || 0;
+    const allPlayers = getLocalPlayers();
+    const idx = allPlayers.findIndex((p) => p.id === newPlayer.id);
+    if (idx >= 0) {
+      allPlayers[idx] = newPlayer;
+      saveLocalPlayers(allPlayers);
+    }
+    showToast("New participant added to leaderboard.");
+    setManualName("");
+    setManualScore(0);
+    setShowAddPlayerModal(false);
+    fetchAdminOverview();
+    onRefreshAllData();
   };
 
   // -------------------------------------------------------------
@@ -371,15 +485,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         },
         body: JSON.stringify({ questions: updated }),
       });
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         showToast("Question updated successfully.");
         setEditingQuestionId(null);
         fetchAdminOverview();
         onRefreshAllData();
+        return;
       }
     } catch (err) {
-      showToast("Failed to update question.", "error");
+      // Offline fallback
     }
+
+    // Static fallback
+    saveLocalQuestions(updated);
+    showToast("Question updated successfully.");
+    setEditingQuestionId(null);
+    fetchAdminOverview();
+    onRefreshAllData();
   };
 
   const handleRestoreDefaultQuestions = async () => {
@@ -390,14 +513,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         method: "POST",
         headers: { "x-admin-password": passwordInput },
       });
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         showToast("Restored 15 canonical Onam questions.");
         fetchAdminOverview();
         onRefreshAllData();
+        return;
       }
     } catch (err) {
-      showToast("Failed to restore default questions.", "error");
+      // Offline fallback
     }
+
+    // Static fallback
+    restoreDefaultLocalQuestions();
+    showToast("Restored 15 canonical Onam questions.");
+    fetchAdminOverview();
+    onRefreshAllData();
   };
 
   // -------------------------------------------------------------
@@ -413,14 +544,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         },
         body: JSON.stringify(newSettingsObj),
       });
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         showToast("Settings updated successfully.");
         fetchAdminOverview();
         onRefreshAllData();
+        return;
       }
     } catch (err) {
-      showToast("Failed to update settings.", "error");
+      // Offline fallback
     }
+
+    // Static fallback
+    saveLocalSettings(newSettingsObj);
+    showToast("Settings updated successfully.");
+    fetchAdminOverview();
+    onRefreshAllData();
   };
 
   const handleToggleEntryPage = async () => {
@@ -434,14 +573,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         },
         body: JSON.stringify({ enabled: nextVal }),
       });
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         showToast(`Admin entry page is now ${nextVal ? "ACTIVE" : "HIDDEN"}.`);
         fetchAdminOverview();
         onRefreshAllData();
+        return;
       }
     } catch (err) {
-      showToast("Failed to toggle admin entry page.", "error");
+      // Offline fallback
     }
+
+    // Static fallback
+    saveLocalSettings({ adminEntryEnabled: nextVal });
+    showToast(`Admin entry page is now ${nextVal ? "ACTIVE" : "HIDDEN"}.`);
+    fetchAdminOverview();
+    onRefreshAllData();
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -518,14 +665,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         },
         body: JSON.stringify({ target }),
       });
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         showToast("System reset executed successfully.");
         fetchAdminOverview();
         onRefreshAllData();
+        return;
       }
     } catch (err) {
-      showToast("Failed to execute reset.", "error");
+      // Offline fallback
     }
+
+    // Static fallback
+    if (target === "all-participants") {
+      saveLocalPlayers([]);
+    } else {
+      saveLocalPlayers([]);
+      restoreDefaultLocalQuestions();
+      saveLocalSettings({
+        quizEnabled: true,
+        allowSubmissions: true,
+        adminEntryEnabled: true,
+        questionDuration: 20,
+        maxPointsPerQuestion: 5,
+        autoAdvance: true,
+        autoAdvanceDelay: 6,
+      });
+    }
+    showToast("System reset executed successfully.");
+    fetchAdminOverview();
+    onRefreshAllData();
   };
 
   // -------------------------------------------------------------

@@ -1,18 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { GameState, LeaderboardEntry, Player } from "../types";
+import {
+  getLocalGameState,
+  registerLocalPlayer,
+  submitLocalAnswer,
+  getLocalLeaderboard,
+  saveLocalGameState,
+} from "../lib/quizStorage";
 
 export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (player: Player) => void) {
-  const [gameState, setGameState] = useState<GameState>({
-    status: "lobby",
-    currentQuestionIndex: 0,
-    totalQuestions: 15,
-    questionStartTime: 0,
-    questionDuration: 20,
-    serverTime: Date.now(),
-    connectedPlayersCount: 1,
-    answeredThisRoundCount: 0,
-    leaderboard: [],
-  });
+  const [gameState, setGameState] = useState<GameState>(() => getLocalGameState());
 
   const [isConnected, setIsConnected] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState<number>(20);
@@ -20,17 +17,23 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
   const playerIdRef = useRef<string | null>(playerId || null);
   playerIdRef.current = playerId || null;
 
-  // Fetch initial REST state as immediate fallback
+  // Fetch initial REST state with local storage fallback
   const fetchRestState = useCallback(async () => {
     try {
       const res = await fetch("/api/game/state");
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         const data = await res.json();
         setGameState(data);
+        return;
       }
     } catch (e) {
-      console.warn("Could not fetch REST state:", e);
+      // Server not available (static host)
     }
+
+    // Local fallback
+    const localState = getLocalGameState();
+    setGameState(localState);
   }, []);
 
   // WebSocket Connection Lifecycle
@@ -160,7 +163,7 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
     return () => clearInterval(timerInterval);
   }, [gameState.status, gameState.questionStartTime, gameState.questionDuration]);
 
-  // Actions
+  // Actions with offline/static hosting fallback
   const registerPlayer = useCallback(async (name: string): Promise<Player | null> => {
     try {
       const res = await fetch("/api/register", {
@@ -168,23 +171,29 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
       });
-      const data = await res.json();
-      if (res.ok && data.player) {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: "REGISTER_CLIENT",
-              playerId: data.player.id,
-              playerName: data.player.name,
-            })
-          );
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
+        const data = await res.json();
+        if (data.player) {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: "REGISTER_CLIENT",
+                playerId: data.player.id,
+                playerName: data.player.name,
+              })
+            );
+          }
+          return data.player;
         }
-        return data.player;
       }
     } catch (err) {
-      console.error("Register player error:", err);
+      // Offline fallback
     }
-    return null;
+
+    // Local registration fallback for InfinityFree / static hosting
+    const localPlayer = registerLocalPlayer(name);
+    return localPlayer;
   }, []);
 
   const submitAnswer = useCallback(
@@ -217,13 +226,27 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
             timeRemaining: timeLeft,
           }),
         });
-        return await res.json();
+        const contentType = res.headers.get("content-type");
+        if (res.ok && contentType && contentType.includes("application/json")) {
+          return await res.json();
+        }
       } catch (err) {
-        console.error("Submission failed via REST fallback:", err);
-        return { error: "Network error submitting answer." };
+        // Offline fallback
       }
+
+      // Local submission fallback for InfinityFree / static hosting
+      const localResult = submitLocalAnswer(
+        playerIdRef.current,
+        currentQ.id,
+        selectedOption,
+        timeLeft
+      );
+      if (localResult.player && onPlayerUpdated) {
+        onPlayerUpdated(localResult.player);
+      }
+      return localResult;
     },
-    [gameState.currentQuestion]
+    [gameState.currentQuestion, onPlayerUpdated]
   );
 
   return {
