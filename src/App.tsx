@@ -9,7 +9,8 @@ import { AdminLoginModal } from "./components/AdminLoginModal";
 import { useRealtimeQuiz } from "./hooks/useRealtimeQuiz";
 import { Player, LeaderboardEntry } from "./types";
 import { Lock } from "lucide-react";
-import { getLocalLeaderboard, getLocalSettings } from "./lib/quizStorage";
+import { getLocalLeaderboard, getLocalSettings, clearLocalPlayerSession, clearAllLocalQuizData } from "./lib/quizStorage";
+import { clearDeviceTracking } from "./lib/deviceTracker";
 
 export default function App() {
   const [currentView, setCurrentView] = useState<"landing" | "quiz" | "completion" | "leaderboard" | "admin">("landing");
@@ -43,7 +44,13 @@ export default function App() {
     return null;
   });
 
-  // Real-time WebSocket hook
+  const handleClearPlayerSession = useCallback(() => {
+    setCurrentPlayer(null);
+    clearLocalPlayerSession();
+    clearDeviceTracking();
+  }, []);
+
+  // Real-time WebSocket hook with reset handlers
   const {
     gameState,
     timeRemaining,
@@ -51,7 +58,7 @@ export default function App() {
     registerPlayer,
     submitAnswer,
     refreshState,
-  } = useRealtimeQuiz(currentPlayer?.id);
+  } = useRealtimeQuiz(currentPlayer?.id, setCurrentPlayer, handleClearPlayerSession);
 
   // Fetch full Leaderboard and system settings with static fallback
   const fetchAllData = useCallback(async () => {
@@ -64,9 +71,15 @@ export default function App() {
       const contentType = lbRes.headers.get("content-type");
       if (lbRes.ok && contentType && contentType.includes("application/json")) {
         const lbData = await lbRes.json();
-        setLeaderboardData(lbData.leaderboard || []);
-        setTotalParticipants(lbData.totalParticipants || lbData.leaderboard?.length || 0);
+        const incomingLeaderboard = lbData.leaderboard || [];
+        setLeaderboardData(incomingLeaderboard);
+        setTotalParticipants(lbData.totalParticipants || incomingLeaderboard.length || 0);
         loadedLeaderboard = true;
+
+        // If database is empty on server, ensure stale player is cleared
+        if (incomingLeaderboard.length === 0) {
+          handleClearPlayerSession();
+        }
       }
     } catch (err) {
       // Offline fallback
@@ -91,6 +104,9 @@ export default function App() {
       const localLb = getLocalLeaderboard();
       setLeaderboardData(localLb);
       setTotalParticipants(localLb.length);
+      if (localLb.length === 0) {
+        handleClearPlayerSession();
+      }
     }
     if (!loadedSettings) {
       const localSettings = getLocalSettings();
@@ -98,7 +114,7 @@ export default function App() {
     }
 
     setIsRefreshing(false);
-  }, []);
+  }, [handleClearPlayerSession]);
 
   useEffect(() => {
     fetchAllData();
@@ -106,15 +122,20 @@ export default function App() {
 
   // Sync leaderboard when WebSocket broadcasts updates
   useEffect(() => {
-    if (gameState.leaderboard && gameState.leaderboard.length > 0) {
+    if (gameState.leaderboard) {
       setLeaderboardData(gameState.leaderboard);
       setTotalParticipants(gameState.leaderboard.length);
+
+      // If leaderboard is reset to empty, clear player session
+      if (gameState.leaderboard.length === 0 && currentPlayer) {
+        handleClearPlayerSession();
+      }
     }
-  }, [gameState.leaderboard]);
+  }, [gameState.leaderboard, currentPlayer, handleClearPlayerSession]);
 
   // Update current player state if present in server leaderboard
   useEffect(() => {
-    if (currentPlayer && gameState.leaderboard) {
+    if (currentPlayer && gameState.leaderboard && gameState.leaderboard.length > 0) {
       const updated = gameState.leaderboard.find((p) => p.id === currentPlayer.id);
       if (updated) {
         setCurrentPlayer((prev) => (prev ? { ...prev, ...updated } : prev));
@@ -167,6 +188,7 @@ export default function App() {
       }
     } catch (err) {
       console.error("Registration error:", err);
+      throw err;
     }
   };
 
@@ -196,6 +218,7 @@ export default function App() {
             onJoinQuiz={handleJoinMatch}
             onStartPlaying={() => setCurrentView("quiz")}
             onViewLeaderboard={() => setCurrentView("leaderboard")}
+            onClearPlayerSession={handleClearPlayerSession}
             savedPlayerName={currentPlayer?.name}
           />
         )}
@@ -241,6 +264,7 @@ export default function App() {
               fetchAllData();
               refreshState();
             }}
+            onClearPlayerSession={handleClearPlayerSession}
             adminEntryEnabled={adminEntryEnabled}
           />
         )}
@@ -283,3 +307,4 @@ export default function App() {
     </div>
   );
 }
+

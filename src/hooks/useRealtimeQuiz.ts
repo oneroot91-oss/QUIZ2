@@ -6,9 +6,22 @@ import {
   submitLocalAnswer,
   getLocalLeaderboard,
   saveLocalGameState,
+  clearAllLocalQuizData,
+  clearLocalPlayerSession,
 } from "../lib/quizStorage";
+import {
+  getOrCreateDeviceId,
+  getDeviceFingerprint,
+  markDeviceQuizCompleted,
+  isDeviceCompletedQuiz,
+  clearDeviceTracking,
+} from "../lib/deviceTracker";
 
-export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (player: Player) => void) {
+export function useRealtimeQuiz(
+  playerId?: string | null,
+  onPlayerUpdated?: (player: Player | null) => void,
+  onSystemReset?: () => void
+) {
   const [gameState, setGameState] = useState<GameState>(() => getLocalGameState());
 
   const [isConnected, setIsConnected] = useState(false);
@@ -70,14 +83,27 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
         if (isUnmounted) return;
         try {
           const msg = JSON.parse(event.data);
+
+          if (msg.type === "SYSTEM_RESET") {
+            clearAllLocalQuizData();
+            if (onPlayerUpdated) onPlayerUpdated(null);
+            if (onSystemReset) onSystemReset();
+            return;
+          }
+
+          if (msg.type === "CLEAR_DEVICE_LOCKS") {
+            clearDeviceTracking();
+            return;
+          }
+
           if (msg.type === "GAME_STATE_UPDATE" || msg.type === "INITIAL_STATE") {
             setGameState(msg.state);
 
-            if (playerIdRef.current && msg.state.leaderboard && onPlayerUpdated) {
+            if (playerIdRef.current && msg.state.leaderboard) {
               const matched = msg.state.leaderboard.find(
                 (entry: LeaderboardEntry) => entry.id === playerIdRef.current
               );
-              if (matched) {
+              if (matched && onPlayerUpdated) {
                 onPlayerUpdated({
                   id: matched.id,
                   name: matched.name,
@@ -87,6 +113,10 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
                   answers: matched.answers || {},
                   joinedAt: matched.joinedAt || Date.now(),
                 });
+              } else if (!matched && msg.state.leaderboard.length === 0 && onPlayerUpdated) {
+                // If leaderboard was wiped, clear the player
+                clearLocalPlayerSession();
+                onPlayerUpdated(null);
               }
             }
           }
@@ -165,29 +195,43 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
 
   // Actions with offline/static hosting fallback
   const registerPlayer = useCallback(async (name: string): Promise<Player | null> => {
+    const deviceId = getOrCreateDeviceId();
+    const deviceFingerprint = getDeviceFingerprint();
+
+    // Check local device completion lock first
+    if (isDeviceCompletedQuiz()) {
+      throw new Error("This phone/device has already finished the 15-question quiz challenge. Only 1 attempt is permitted per device.");
+    }
+
     try {
       const res = await fetch("/api/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, deviceId, deviceFingerprint }),
       });
       const contentType = res.headers.get("content-type");
-      if (res.ok && contentType && contentType.includes("application/json")) {
+      if (contentType && contentType.includes("application/json")) {
         const data = await res.json();
-        if (data.player) {
+        if (res.ok && data.player) {
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
             wsRef.current.send(
               JSON.stringify({
                 type: "REGISTER_CLIENT",
                 playerId: data.player.id,
                 playerName: data.player.name,
+                deviceId,
               })
             );
           }
           return data.player;
+        } else if (data.error) {
+          throw new Error(data.message || data.error);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (err.message && (err.message.includes("already") || err.message.includes("device") || err.message.includes("phone"))) {
+        throw err;
+      }
       // Offline fallback
     }
 
@@ -196,19 +240,40 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
     return localPlayer;
   }, []);
 
+  const completeQuiz = useCallback(async (player: Player) => {
+    const deviceId = getOrCreateDeviceId();
+    const deviceFingerprint = getDeviceFingerprint();
+    markDeviceQuizCompleted(player);
+
+    try {
+      await fetch("/api/player/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerId: player.id,
+          deviceId,
+          deviceFingerprint,
+          totalScore: player.totalScore,
+          correctCount: player.correctCount,
+        }),
+      });
+    } catch (e) {}
+  }, []);
+
   const submitAnswer = useCallback(
-    async (selectedOption: number, timeLeft: number) => {
+    async (selectedOption: number, timeLeft: number, questionId?: number) => {
       if (!playerIdRef.current) return { error: "No participant joined." };
 
-      const currentQ = gameState.currentQuestion;
-      if (!currentQ) return { error: "No active question." };
+      const targetQuestionId = questionId !== undefined ? questionId : gameState.currentQuestion?.id || 1;
+      const deviceId = getOrCreateDeviceId();
 
       const payload = {
         type: "SUBMIT_ANSWER",
         playerId: playerIdRef.current,
-        questionId: currentQ.id,
+        questionId: targetQuestionId,
         selectedOption,
         timeRemaining: timeLeft,
+        deviceId,
       };
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -221,9 +286,10 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             playerId: playerIdRef.current,
-            questionId: currentQ.id,
+            questionId: targetQuestionId,
             selectedOption,
             timeRemaining: timeLeft,
+            deviceId,
           }),
         });
         const contentType = res.headers.get("content-type");
@@ -237,7 +303,7 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
       // Local submission fallback for InfinityFree / static hosting
       const localResult = submitLocalAnswer(
         playerIdRef.current,
-        currentQ.id,
+        targetQuestionId,
         selectedOption,
         timeLeft
       );
@@ -255,6 +321,7 @@ export function useRealtimeQuiz(playerId?: string | null, onPlayerUpdated?: (pla
     timeRemaining,
     registerPlayer,
     submitAnswer,
+    completeQuiz,
     refreshState: fetchRestState,
   };
 }

@@ -6,6 +6,7 @@
 
 import { DEFAULT_QUESTIONS } from "../data/defaultQuestions";
 import { GameState, LeaderboardEntry, Player, Question, AppSettings, PlayerAnswer } from "../types";
+import { getOrCreateDeviceId, isDeviceCompletedQuiz, markDeviceQuizCompleted, clearDeviceTracking } from "./deviceTracker";
 
 const STORAGE_KEY_PLAYERS = "onam_quiz_players_list";
 const STORAGE_KEY_QUESTIONS = "onam_quiz_questions_list";
@@ -101,6 +102,11 @@ export function registerLocalPlayer(name: string): Player {
     return existing;
   }
 
+  // If this physical phone/device has already finished the quiz, prevent new registration
+  if (isDeviceCompletedQuiz()) {
+    throw new Error("DEVICE_ALREADY_COMPLETED: This phone has already completed all 15 questions of the Onam Grand Speed Challenge. Each device is limited to 1 official attempt.");
+  }
+
   const newPlayer: Player = {
     id: "p_" + Math.random().toString(36).substring(2, 9) + "_" + Date.now().toString(36),
     name: trimmed,
@@ -188,6 +194,12 @@ export function submitLocalAnswer(
   ) / 100;
 
   saveLocalPlayers(players);
+
+  // If user completed all questions, lock device
+  if (player.answeredCount >= questions.length && questions.length > 0) {
+    markDeviceQuizCompleted(player);
+  }
+
   return { success: true, scoreEarned, isCorrect, player };
 }
 
@@ -224,4 +236,32 @@ export function getLocalGameState(): GameState {
 
 export function saveLocalGameState(state: GameState): void {
   setLocalItem(STORAGE_KEY_GAME_STATE, state);
+}
+
+/**
+ * Thoroughly clear player registration and session tokens
+ */
+export function clearLocalPlayerSession(): void {
+  try {
+    localStorage.removeItem("onam_quiz_player_id");
+    localStorage.removeItem("onam_quiz_player_name");
+    localStorage.removeItem("onam_quiz_saved_player_name");
+    sessionStorage.removeItem("onam_quiz_player_id");
+    sessionStorage.removeItem("onam_quiz_player_name");
+  } catch (e) {}
+}
+
+/**
+ * Complete factory wipe of all client-side cached data, players, and device locks
+ */
+export function clearAllLocalQuizData(): void {
+  try {
+    saveLocalPlayers([]);
+    clearLocalPlayerSession();
+    clearDeviceTracking();
+    localStorage.removeItem(STORAGE_KEY_GAME_STATE);
+    localStorage.removeItem(STORAGE_KEY_PLAYERS);
+    sessionStorage.removeItem(STORAGE_KEY_GAME_STATE);
+    sessionStorage.removeItem(STORAGE_KEY_PLAYERS);
+  } catch (e) {}
 }

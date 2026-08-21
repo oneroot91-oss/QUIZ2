@@ -42,6 +42,7 @@ import {
   verifyPasscodeWithFallback,
   resetPasswordWithPasscodeWithFallback,
   setStoredAdminPassword,
+  getStoredAdminPassword,
   verifyAdminPasswordLocally,
   ADMIN_RECOVERY_PASSCODE,
 } from "../lib/authStorage";
@@ -54,17 +55,22 @@ import {
   getLocalSettings,
   saveLocalSettings,
   getLocalLeaderboard,
+  clearAllLocalQuizData,
+  clearLocalPlayerSession,
 } from "../lib/quizStorage";
+import { clearDeviceTracking } from "../lib/deviceTracker";
 
 interface AdminPanelProps {
   onBackToQuiz: () => void;
   onRefreshAllData: () => void;
+  onClearPlayerSession?: () => void;
   adminEntryEnabled: boolean;
 }
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   onBackToQuiz,
   onRefreshAllData,
+  onClearPlayerSession,
   adminEntryEnabled: initialAdminEntryEnabled,
 }) => {
   // Authentication State
@@ -113,6 +119,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [newPlayerName, setNewPlayerName] = useState("");
   const [newPlayerScore, setNewPlayerScore] = useState<number>(0);
   const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
+  const [showFactoryResetModal, setShowFactoryResetModal] = useState(false);
+  const [showClearLocksModal, setShowClearLocksModal] = useState(false);
+  const [showRestoreQuestionsModal, setShowRestoreQuestionsModal] = useState(false);
+  const [questionToDeleteId, setQuestionToDeleteId] = useState<number | null>(null);
+  const [isProcessingAction, setIsProcessingAction] = useState(false);
 
   // Dashboard 2: Questions State
   const [questionSearch, setQuestionSearch] = useState("");
@@ -378,22 +389,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const handleClearAllPlayers = async () => {
-    saveLocalPlayers([]);
+    clearAllLocalQuizData();
+    onClearPlayerSession?.();
     setPlayers([]);
     setShowClearConfirmModal(false);
 
     try {
+      const activePassword = passwordInput || getStoredAdminPassword() || "Admin@1965#IT";
       await fetch("/api/admin/reset-system", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-admin-password": passwordInput,
+          "x-admin-password": activePassword,
         },
-        body: JSON.stringify({ target: "all-participants" }),
+        body: JSON.stringify({ target: "all-participants", password: activePassword }),
       });
     } catch (e) {}
 
-    showToast("Cleared all participant entries.");
+    showToast("Cleared all participant entries and phone attempt locks.");
     onRefreshAllData();
   };
 
@@ -533,47 +546,73 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     onRefreshAllData();
   };
 
-  const handleDeleteQuestion = async (id: number) => {
+  const handleDeleteQuestion = (id: number) => {
     if (questions.length <= 1) {
-      alert("At least one question is required for the quiz.");
+      showToast("At least one question is required for the quiz.", "error");
       return;
     }
-    if (!window.confirm("Are you sure you want to delete this question?")) return;
+    setQuestionToDeleteId(id);
+  };
 
-    const updated = questions.filter((q) => q.id !== id);
-    saveLocalQuestions(updated);
-    setQuestions(updated);
+  const executeDeleteQuestion = async () => {
+    if (questionToDeleteId === null) return;
+    setIsProcessingAction(true);
 
     try {
+      const updated = questions.filter((q) => q.id !== questionToDeleteId);
+      saveLocalQuestions(updated);
+      setQuestions(updated);
+
+      const activePassword = passwordInput || getStoredAdminPassword() || "Admin@1965#IT";
       await fetch("/api/admin/questions", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          "x-admin-password": passwordInput,
+          "x-admin-password": activePassword,
         },
-        body: JSON.stringify({ questions: updated }),
+        body: JSON.stringify({ questions: updated, password: activePassword }),
       });
-    } catch (e) {}
 
-    showToast("Question deleted.");
-    onRefreshAllData();
+      showToast("Question deleted.");
+      onRefreshAllData();
+    } catch (e) {
+      showToast("Question deleted locally.");
+      onRefreshAllData();
+    } finally {
+      setIsProcessingAction(false);
+      setQuestionToDeleteId(null);
+    }
   };
 
-  const handleRestoreDefaultQuestions = async () => {
-    if (!window.confirm("Restore the default 15 Onam questions? This will replace current questions.")) return;
+  const handleRestoreDefaultQuestions = () => {
+    setShowRestoreQuestionsModal(true);
+  };
 
-    const defaults = restoreDefaultLocalQuestions();
-    setQuestions(defaults);
-
+  const executeRestoreDefaultQuestions = async () => {
+    setIsProcessingAction(true);
     try {
+      const defaults = restoreDefaultLocalQuestions();
+      setQuestions(defaults);
+
+      const activePassword = passwordInput || getStoredAdminPassword() || "Admin@1965#IT";
       await fetch("/api/admin/questions/restore-default", {
         method: "POST",
-        headers: { "x-admin-password": passwordInput },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-admin-password": activePassword 
+        },
+        body: JSON.stringify({ password: activePassword }),
       });
-    } catch (e) {}
 
-    showToast("Default 15 Onam questions restored.");
-    onRefreshAllData();
+      showToast("Default 15 Onam questions restored.");
+      onRefreshAllData();
+    } catch (e) {
+      showToast("Default questions restored.");
+      onRefreshAllData();
+    } finally {
+      setIsProcessingAction(false);
+      setShowRestoreQuestionsModal(false);
+    }
   };
 
   // =========================================================================
@@ -582,15 +621,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentPasswordInput) {
-      alert("Please enter current admin password.");
+      showToast("Please enter current admin password.", "error");
       return;
     }
     if (newPasswordInput.length < 4) {
-      alert("New password must be at least 4 characters long.");
+      showToast("New password must be at least 4 characters long.", "error");
       return;
     }
     if (newPasswordInput !== confirmPasswordInput) {
-      alert("New passwords do not match.");
+      showToast("New passwords do not match.", "error");
       return;
     }
 
@@ -630,7 +669,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setConfirmPasswordInput("");
       showToast("Admin password successfully updated locally!");
     } else {
-      alert("Current password verification failed.");
+      showToast("Current password verification failed.", "error");
     }
     setIsChangingPassword(false);
   };
@@ -638,11 +677,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleSecurityPasscodeReset = async (e: React.FormEvent) => {
     e.preventDefault();
     if (securityPasscodeResetInput.trim() !== ADMIN_RECOVERY_PASSCODE) {
-      alert("Invalid master recovery passcode.");
+      showToast("Invalid master recovery passcode.", "error");
       return;
     }
     if (securityPasscodeNewPassword.length < 4) {
-      alert("New password must be at least 4 characters.");
+      showToast("New password must be at least 4 characters.", "error");
       return;
     }
 
@@ -740,40 +779,79 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     onRefreshAllData();
   };
 
-  const handleFactoryReset = async () => {
-    if (!window.confirm("Perform Full Factory Reset? This will reset default questions, clear all participants, and restore default timer (20s).")) {
-      return;
-    }
+  const handleFactoryReset = () => {
+    setShowFactoryResetModal(true);
+  };
 
-    const defaultQ = restoreDefaultLocalQuestions();
-    saveLocalPlayers([]);
-    const defaultS = saveLocalSettings({
-      quizEnabled: true,
-      allowSubmissions: true,
-      adminEntryEnabled: true,
-      questionDuration: 20,
-      maxPointsPerQuestion: 5,
-      autoAdvance: true,
-      autoAdvanceDelay: 4,
-    });
-
-    setQuestions(defaultQ);
-    setPlayers([]);
-    setSettings(defaultS);
-
+  const executeFactoryReset = async () => {
+    setIsProcessingAction(true);
     try {
+      clearAllLocalQuizData();
+      onClearPlayerSession?.();
+      const defaultQ = restoreDefaultLocalQuestions();
+      const defaultS = saveLocalSettings({
+        quizEnabled: true,
+        allowSubmissions: true,
+        adminEntryEnabled: true,
+        questionDuration: 20,
+        maxPointsPerQuestion: 5,
+        autoAdvance: true,
+        autoAdvanceDelay: 4,
+      });
+
+      setQuestions(defaultQ);
+      setPlayers([]);
+      setSettings(defaultS);
+
+      const activePassword = passwordInput || getStoredAdminPassword() || "Admin@1965#IT";
       await fetch("/api/admin/reset-system", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-admin-password": passwordInput,
+          "x-admin-password": activePassword,
         },
-        body: JSON.stringify({ target: "factory-reset" }),
+        body: JSON.stringify({ target: "factory-reset", password: activePassword }),
       });
-    } catch (e) {}
 
-    showToast("Full factory reset completed.");
-    onRefreshAllData();
+      showToast("Full factory reset completed! Default 15 questions, 20s timer & clean device locks restored.");
+      onRefreshAllData();
+    } catch (e) {
+      showToast("Factory reset completed on local storage.");
+      onRefreshAllData();
+    } finally {
+      setIsProcessingAction(false);
+      setShowFactoryResetModal(false);
+    }
+  };
+
+  const handleClearDeviceLocks = () => {
+    setShowClearLocksModal(true);
+  };
+
+  const executeClearDeviceLocks = async () => {
+    setIsProcessingAction(true);
+    try {
+      clearDeviceTracking();
+      onClearPlayerSession?.();
+      const activePassword = passwordInput || getStoredAdminPassword() || "Admin@1965#IT";
+      await fetch("/api/admin/reset-system", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-password": activePassword,
+        },
+        body: JSON.stringify({ target: "clear-device-locks", password: activePassword }),
+      });
+
+      showToast("Phone attempt locks cleared. All devices can take the quiz again.");
+      onRefreshAllData();
+    } catch (e) {
+      showToast("Phone attempt locks cleared locally.");
+      onRefreshAllData();
+    } finally {
+      setIsProcessingAction(false);
+      setShowClearLocksModal(false);
+    }
   };
 
   // -------------------------------------------------------------------------
@@ -1837,6 +1915,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
 
+              {/* Phone Attempt Locks Reset */}
+              <div className="bg-white rounded-3xl p-6 shadow-xl border border-amber-300/80 space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">
+                    <RotateCcw className="w-5 h-5 text-amber-700" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-extrabold text-stone-900">Phone Attempt Tracking Locks</h4>
+                    <p className="text-xs text-stone-500">Allow devices that finished 15 questions to take the quiz again.</p>
+                  </div>
+                </div>
+
+                <p className="text-xs text-stone-600 leading-relaxed">
+                  Clears the device completion fingerprint so participants can re-test from their smartphones without clearing browser cookies manually.
+                </p>
+
+                <button
+                  onClick={handleClearDeviceLocks}
+                  className="w-full py-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow transition cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>Clear All Phone Attempt Locks</span>
+                </button>
+              </div>
+
               {/* Factory Reset */}
               <div className="bg-white rounded-3xl p-6 shadow-xl border border-red-200 space-y-4">
                 <div className="flex items-center gap-3">
@@ -1845,12 +1948,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
                   <div>
                     <h4 className="text-sm font-extrabold text-red-950">Factory System Reset</h4>
-                    <p className="text-xs text-stone-500">Restore canonical Onam questions and wipe participant data.</p>
+                    <p className="text-xs text-stone-500">Restore canonical Onam questions, clear leaderboard & wipe device locks.</p>
                   </div>
                 </div>
 
                 <p className="text-xs text-stone-600 leading-relaxed">
-                  Restores the standard 15 Onam cultural questions, sets per-question timer back to 20 seconds, and clears all leaderboard entries.
+                  Restores the standard 15 Onam cultural questions, sets per-question timer back to 20 seconds, clears all leaderboard entries, and unlocks all devices.
                 </p>
 
                 <button
@@ -2118,16 +2221,201 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
+                type="button"
                 onClick={() => setShowClearConfirmModal(false)}
                 className="px-4 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold cursor-pointer"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleClearAllPlayers}
                 className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow cursor-pointer"
               >
                 Yes, Clear All Records
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================= */}
+      {/* MODAL: FACTORY RESET CONFIRMATION */}
+      {/* ================================================================= */}
+      {showFactoryResetModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border-2 border-red-600 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-700 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-black text-red-950">Execute Full Factory Reset?</h3>
+                <p className="text-xs text-red-800 mt-1">
+                  This will completely restore the system to its initial out-of-the-box state:
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-red-50/70 border border-red-200 rounded-2xl p-4 text-xs text-red-950 space-y-2">
+              <div className="flex items-center gap-2">
+                <Check className="w-4 h-4 text-red-600 shrink-0" />
+                <span>Restores default <strong>15 Onam cultural questions</strong></span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Check className="w-4 h-4 text-red-600 shrink-0" />
+                <span>Resets question timer to <strong>20 seconds</strong> & speed scoring (5.00 max pts)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Check className="w-4 h-4 text-red-600 shrink-0" />
+                <span>Wipes all <strong>{players.length} participant scores</strong> from the leaderboard</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Check className="w-4 h-4 text-red-600 shrink-0" />
+                <span>Clears all <strong>phone attempt locks</strong> so any device can take the quiz again</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={() => setShowFactoryResetModal(false)}
+                className="px-4 py-2.5 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold cursor-pointer transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={executeFactoryReset}
+                className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-lg cursor-pointer transition flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <RotateCcw className={`w-4 h-4 ${isProcessingAction ? "animate-spin" : ""}`} />
+                <span>{isProcessingAction ? "Resetting System..." : "Yes, Execute Factory Reset"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================= */}
+      {/* MODAL: CLEAR PHONE LOCKS CONFIRMATION */}
+      {/* ================================================================= */}
+      {showClearLocksModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border-2 border-amber-500 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-6 h-6 text-amber-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-amber-950">Clear Phone Attempt Locks?</h3>
+                <p className="text-xs text-stone-600 mt-1">
+                  Participants who completed all 15 questions will now be allowed to retake the quiz from the same phone.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={() => setShowClearLocksModal(false)}
+                className="px-4 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold cursor-pointer transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={executeClearDeviceLocks}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow cursor-pointer transition flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <RotateCcw className={`w-4 h-4 ${isProcessingAction ? "animate-spin" : ""}`} />
+                <span>{isProcessingAction ? "Clearing..." : "Yes, Clear Phone Locks"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================= */}
+      {/* MODAL: RESTORE DEFAULT QUESTIONS CONFIRMATION */}
+      {/* ================================================================= */}
+      {showRestoreQuestionsModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border-2 border-amber-500 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-6 h-6 text-amber-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-amber-950">Restore 15 Default Questions?</h3>
+                <p className="text-xs text-stone-600 mt-1">
+                  This will overwrite the current question set with the standard 15 Onam cultural questions and explanations.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={() => setShowRestoreQuestionsModal(false)}
+                className="px-4 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold cursor-pointer transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={executeRestoreDefaultQuestions}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow cursor-pointer transition flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <RotateCcw className={`w-4 h-4 ${isProcessingAction ? "animate-spin" : ""}`} />
+                <span>{isProcessingAction ? "Restoring..." : "Yes, Restore Defaults"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================= */}
+      {/* MODAL: DELETE QUESTION CONFIRMATION */}
+      {/* ================================================================= */}
+      {questionToDeleteId !== null && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border-2 border-red-500 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-700 flex items-center justify-center shrink-0">
+                <Trash2 className="w-6 h-6 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-red-950">Delete Question?</h3>
+                <p className="text-xs text-stone-600 mt-1">
+                  Are you sure you want to remove this question from the active quiz?
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={() => setQuestionToDeleteId(null)}
+                className="px-4 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold cursor-pointer transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isProcessingAction}
+                onClick={executeDeleteQuestion}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow cursor-pointer transition flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Trash2 className={`w-4 h-4 ${isProcessingAction ? "animate-spin" : ""}`} />
+                <span>{isProcessingAction ? "Deleting..." : "Yes, Delete Question"}</span>
               </button>
             </div>
           </div>

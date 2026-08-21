@@ -7,14 +7,14 @@ import {
   ShieldAlert,
   Lock,
   Tag,
-  Trophy,
   ArrowRight,
   Flame,
   Ban,
   Sparkles,
   Award,
   ChevronRight,
-  HelpCircle
+  HelpCircle,
+  Check
 } from "lucide-react";
 import {
   GameState,
@@ -27,14 +27,22 @@ import {
 import { PookkalamArt } from "./PookkalamArt";
 import { getLocalQuestions } from "../lib/quizStorage";
 import { DEFAULT_QUESTIONS } from "../data/defaultQuestions";
+import { markDeviceCompletedQuiz, getDeviceId, getDeviceFingerprint } from "../lib/deviceTracker";
 
 interface QuizPageProps {
   currentPlayer: Player;
   gameState: GameState;
   timeRemaining: number;
-  onSubmitAnswer: (selectedOption: number, timeRemaining: number) => Promise<any>;
+  onSubmitAnswer: (selectedOption: number, timeRemaining: number, questionId?: number) => Promise<any>;
   onFinishQuiz: () => void;
   onExitToLobby: () => void;
+}
+
+interface RoundFeedback {
+  score: number;
+  isCorrect: boolean;
+  timeRemaining: number;
+  correctIndex: number;
 }
 
 export const QuizPage: React.FC<QuizPageProps> = ({
@@ -44,13 +52,12 @@ export const QuizPage: React.FC<QuizPageProps> = ({
   onFinishQuiz,
   onExitToLobby,
 }) => {
-  // 1. Load questions list
+  // 1. Load Question List
   const [questionsList, setQuestionsList] = useState<Question[]>(() => {
     const local = getLocalQuestions();
     return local && local.length > 0 ? local : DEFAULT_QUESTIONS;
   });
 
-  // Try to fetch updated questions from server
   useEffect(() => {
     fetch("/api/questions")
       .then((res) => (res.ok ? res.json() : null))
@@ -63,216 +70,318 @@ export const QuizPage: React.FC<QuizPageProps> = ({
   }, []);
 
   // 2. Sequential Question Index
-  // Check if player has already answered some questions to resume properly
-  const [currentQIndex, setCurrentQIndex] = useState<number>(() => {
-    if (!currentPlayer.answers) return 0;
-    const answeredCount = Object.keys(currentPlayer.answers).length;
-    return Math.min(answeredCount, Math.max(0, questionsList.length - 1));
-  });
-
-  const currentQ = questionsList[currentQIndex] || questionsList[0];
-  const currentQId = currentQ?.id ?? 1;
+  const [currentQIndex, setCurrentQIndex] = useState<number>(0);
   const totalQuestions = questionsList.length;
+  const currentQ = questionsList[currentQIndex] || questionsList[0];
   const questionNumber = currentQIndex + 1;
   const isLastQuestion = currentQIndex >= totalQuestions - 1;
 
-  // 3. Precision Countdown Timer State
+  // 3. Question Duration & Precision Timer State
   const duration = gameState.questionDuration || DEFAULT_QUESTION_DURATION;
   const [localTimeRemaining, setLocalTimeRemaining] = useState<number>(duration);
   const [isTimerActive, setIsTimerActive] = useState<boolean>(true);
-  const startTimeRef = useRef<number>(performance.now());
-  const timerFrameRef = useRef<number | null>(null);
 
-  // 4. Player Selection and Review State
-  const existingAnswer = currentPlayer.answers?.[currentQId];
-  const [selectedOption, setSelectedOption] = useState<number | null>(
-    existingAnswer !== undefined ? existingAnswer.selectedOption : null
-  );
-  const [isReviewMode, setIsReviewMode] = useState<boolean>(existingAnswer !== undefined);
+  // 4. Player Selection, Submission & Feedback State
+  const [selectedOption, setSelectedOption] = useState<number | null>(null);
+  const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [roundFeedback, setRoundFeedback] = useState<{
-    score: number;
-    isCorrect: boolean;
-    timeRemaining: number;
-  } | null>(
-    existingAnswer
-      ? {
-          score: existingAnswer.score,
-          isCorrect: existingAnswer.isCorrect,
-          timeRemaining: existingAnswer.timeRemaining,
-        }
-      : null
-  );
+  const [feedback, setFeedback] = useState<RoundFeedback | null>(null);
 
-  // Auto-advance countdown after answering
-  const [autoAdvanceSeconds, setAutoAdvanceSeconds] = useState<number>(4);
-  const autoAdvanceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // Auto-advance countdown
+  const [autoAdvanceSeconds, setAutoAdvanceSeconds] = useState<number>(5);
 
   // Anti-Cheat State
   const [violations, setViolations] = useState(0);
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [showDisqualifiedModal, setShowDisqualifiedModal] = useState(false);
   const [securityToast, setSecurityToast] = useState<string | null>(null);
+
+  // -------------------------------------------------------------
+  // Stable Refs to completely decouple Timer & Callbacks from Re-renders
+  // -------------------------------------------------------------
+  const selectedOptionRef = useRef<number | null>(null);
+  const isSubmittedRef = useRef<boolean>(false);
+  const currentQRef = useRef<Question>(currentQ);
+  const onSubmitAnswerRef = useRef(onSubmitAnswer);
+  const onFinishQuizRef = useRef(onFinishQuiz);
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const autoAdvanceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const startTimeRef = useRef<number>(performance.now());
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastViolationTimeRef = useRef(0);
   const isFinishedRef = useRef(false);
+
+  // Keep refs synchronized with latest state/props
+  useEffect(() => {
+    selectedOptionRef.current = selectedOption;
+  }, [selectedOption]);
+
+  useEffect(() => {
+    isSubmittedRef.current = isSubmitted;
+  }, [isSubmitted]);
+
+  useEffect(() => {
+    currentQRef.current = currentQ;
+  }, [currentQ]);
+
+  useEffect(() => {
+    onSubmitAnswerRef.current = onSubmitAnswer;
+  }, [onSubmitAnswer]);
+
+  useEffect(() => {
+    onFinishQuizRef.current = onFinishQuiz;
+  }, [onFinishQuiz]);
 
   const showSecurityNotice = (msg: string) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setSecurityToast(msg);
     toastTimeoutRef.current = setTimeout(() => {
-      setSecurityToast(null), 2800;
-    });
+      setSecurityToast(null);
+    }, 2800);
   };
 
   // -------------------------------------------------------------
-  // High-Precision per-question Timer
+  // Clean Next Question Progression
   // -------------------------------------------------------------
-  const handleTimeout = useCallback(async () => {
-    if (selectedOption !== null || isReviewMode || isSubmitting) return;
-
-    setIsTimerActive(false);
-    setSelectedOption(-1);
-    setIsReviewMode(true);
-    setRoundFeedback({
-      score: 0,
-      isCorrect: false,
-      timeRemaining: 0,
-    });
-
-    try {
-      setIsSubmitting(true);
-      await onSubmitAnswer(-1, 0);
-    } catch (e) {
-      // offline fallback handled
-    } finally {
-      setIsSubmitting(false);
+  const handleNextQuestion = useCallback(() => {
+    if (autoAdvanceTimerRef.current) {
+      clearInterval(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
     }
 
-    // Start auto advance
-    startAutoAdvanceTimer();
-  }, [selectedOption, isReviewMode, isSubmitting, onSubmitAnswer]);
+    const finalizeQuiz = () => {
+      isFinishedRef.current = true;
+      markDeviceCompletedQuiz(currentPlayer.name, currentPlayer.totalScore, currentPlayer.correctCount);
+      try {
+        fetch("/api/player/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            playerId: currentPlayer.id,
+            deviceId: getDeviceId(),
+            deviceFingerprint: getDeviceFingerprint(),
+            name: currentPlayer.name,
+            totalScore: currentPlayer.totalScore,
+            correctCount: currentPlayer.correctCount,
+          }),
+        }).catch(() => {});
+      } catch (e) {}
+      onFinishQuizRef.current();
+    };
 
-  const startAutoAdvanceTimer = () => {
-    setAutoAdvanceSeconds(4);
-    if (autoAdvanceTimerRef.current) clearInterval(autoAdvanceTimerRef.current);
+    if (currentQIndex < totalQuestions - 1) {
+      setCurrentQIndex((prev) => prev + 1);
+    } else {
+      finalizeQuiz();
+    }
+  }, [currentQIndex, totalQuestions, currentPlayer]);
+
+  const startAutoAdvance = useCallback(() => {
+    setAutoAdvanceSeconds(5);
+    if (autoAdvanceTimerRef.current) {
+      clearInterval(autoAdvanceTimerRef.current);
+    }
 
     autoAdvanceTimerRef.current = setInterval(() => {
       setAutoAdvanceSeconds((prev) => {
         if (prev <= 1) {
-          if (autoAdvanceTimerRef.current) clearInterval(autoAdvanceTimerRef.current);
-          handleNextQuestion();
+          if (autoAdvanceTimerRef.current) {
+            clearInterval(autoAdvanceTimerRef.current);
+            autoAdvanceTimerRef.current = null;
+          }
+          if (currentQIndex < totalQuestions - 1) {
+            setCurrentQIndex((p) => p + 1);
+          } else {
+            isFinishedRef.current = true;
+            markDeviceCompletedQuiz(currentPlayer.name, currentPlayer.totalScore, currentPlayer.correctCount);
+            try {
+              fetch("/api/player/complete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  playerId: currentPlayer.id,
+                  deviceId: getDeviceId(),
+                  deviceFingerprint: getDeviceFingerprint(),
+                  name: currentPlayer.name,
+                  totalScore: currentPlayer.totalScore,
+                  correctCount: currentPlayer.correctCount,
+                }),
+              }).catch(() => {});
+            } catch (e) {}
+            onFinishQuizRef.current();
+          }
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
-  };
+  }, [currentQIndex, totalQuestions, currentPlayer]);
 
-  // Run precision timer when current question changes or resets
-  useEffect(() => {
-    if (existingAnswer !== undefined) {
-      setSelectedOption(existingAnswer.selectedOption);
-      setIsReviewMode(true);
-      setIsTimerActive(false);
-      setLocalTimeRemaining(existingAnswer.timeRemaining);
-      setRoundFeedback({
-        score: existingAnswer.score,
-        isCorrect: existingAnswer.isCorrect,
-        timeRemaining: existingAnswer.timeRemaining,
-      });
-      return;
+  // -------------------------------------------------------------
+  // Submit Answer Action (Lock in Choice)
+  // -------------------------------------------------------------
+  const handleSubmitAnswer = useCallback(async () => {
+    const chosen = selectedOptionRef.current;
+    if (chosen === null || isSubmittedRef.current) return;
+
+    // 1. Stop timer instantly
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
     }
 
-    // Start clean timer for new question
+    isSubmittedRef.current = true;
+    setIsSubmitted(true);
+    setIsTimerActive(false);
+
+    // 2. Capture exact time remaining
+    const elapsed = (performance.now() - startTimeRef.current) / 1000;
+    const exactRemaining = Math.max(0, Math.min(duration, duration - elapsed));
+    const roundedTime = Math.round(exactRemaining * 10) / 10;
+    setLocalTimeRemaining(roundedTime);
+
+    // 3. Compute accuracy & speed score
+    const curQ = currentQRef.current;
+    const isCorrect = chosen === curQ.correctIndex;
+    const speedScore = isCorrect
+      ? Math.round(MAX_POINTS_PER_QUESTION * (exactRemaining / duration) * 100) / 100
+      : 0;
+
+    const fb: RoundFeedback = {
+      score: speedScore,
+      isCorrect,
+      timeRemaining: roundedTime,
+      correctIndex: curQ.correctIndex,
+    };
+    setFeedback(fb);
+    setIsSubmitting(true);
+
+    try {
+      await onSubmitAnswerRef.current(chosen, roundedTime, curQ.id);
+    } catch (err) {
+      console.error("Submission error:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
+
+    // 4. Start auto advance countdown
+    startAutoAdvance();
+  }, [duration, startAutoAdvance]);
+
+  // -------------------------------------------------------------
+  // Timer Initialization on Question Change
+  // (Runs ONLY when currentQIndex, duration, or totalQuestions changes!)
+  // -------------------------------------------------------------
+  useEffect(() => {
+    // Reset local interactive state for new question
     setSelectedOption(null);
-    setIsReviewMode(false);
-    setRoundFeedback(null);
+    selectedOptionRef.current = null;
+    setIsSubmitted(false);
+    isSubmittedRef.current = false;
+    setIsSubmitting(false);
+    setFeedback(null);
     setLocalTimeRemaining(duration);
     setIsTimerActive(true);
     startTimeRef.current = performance.now();
 
-    if (autoAdvanceTimerRef.current) {
-      clearInterval(autoAdvanceTimerRef.current);
-    }
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    if (autoAdvanceTimerRef.current) clearInterval(autoAdvanceTimerRef.current);
 
-    const interval = setInterval(() => {
+    timerIntervalRef.current = setInterval(() => {
       const elapsed = (performance.now() - startTimeRef.current) / 1000;
       const remaining = Math.max(0, duration - elapsed);
       const rounded = Math.round(remaining * 10) / 10;
       setLocalTimeRemaining(rounded);
 
       if (remaining <= 0) {
-        clearInterval(interval);
-        handleTimeout();
+        if (timerIntervalRef.current) {
+          clearInterval(timerIntervalRef.current);
+          timerIntervalRef.current = null;
+        }
+
+        // Handle Timeout safely via refs
+        if (!isSubmittedRef.current) {
+          isSubmittedRef.current = true;
+          setIsSubmitted(true);
+          setIsTimerActive(false);
+          setLocalTimeRemaining(0);
+
+          const chosen = selectedOptionRef.current;
+          const curQ = currentQRef.current;
+          const isCorrect = chosen !== null && chosen === curQ.correctIndex;
+
+          const fb: RoundFeedback = {
+            score: 0,
+            isCorrect,
+            timeRemaining: 0,
+            correctIndex: curQ.correctIndex,
+          };
+          setFeedback(fb);
+
+          const finalChoice = chosen !== null ? chosen : -1;
+          onSubmitAnswerRef.current(finalChoice, 0, curQ.id).catch(() => {});
+
+          startAutoAdvance();
+        }
       }
     }, 50);
 
     return () => {
-      clearInterval(interval);
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
       if (autoAdvanceTimerRef.current) clearInterval(autoAdvanceTimerRef.current);
     };
-  }, [currentQIndex, duration, existingAnswer, handleTimeout]);
+  }, [currentQIndex, duration, totalQuestions, startAutoAdvance]);
 
   // -------------------------------------------------------------
-  // Option Selection & Speed Score Submission
+  // Option Click (Sets selection smoothly without triggering timer reset)
   // -------------------------------------------------------------
-  const handleSelectOption = async (index: number) => {
-    if (selectedOption !== null || isReviewMode || isSubmitting) return;
-
-    // Freeze timer instantly
-    setIsTimerActive(false);
-    const elapsed = (performance.now() - startTimeRef.current) / 1000;
-    const exactRemaining = Math.max(0, Math.min(duration, duration - elapsed));
-    const roundedTime = Math.round(exactRemaining * 10) / 10;
-    setLocalTimeRemaining(roundedTime);
-
+  const handleSelectOption = (index: number) => {
+    if (isSubmittedRef.current) return;
+    selectedOptionRef.current = index;
     setSelectedOption(index);
-    setIsReviewMode(true);
-    setIsSubmitting(true);
-
-    const isCorrect = index === currentQ.correctIndex;
-    const speedScore = isCorrect
-      ? Math.round((MAX_POINTS_PER_QUESTION * (exactRemaining / duration)) * 100) / 100
-      : 0;
-
-    setRoundFeedback({
-      score: speedScore,
-      isCorrect,
-      timeRemaining: roundedTime,
-    });
-
-    try {
-      await onSubmitAnswer(index, roundedTime);
-    } catch (err) {
-      console.error("Answer submission error:", err);
-    } finally {
-      setIsSubmitting(false);
-    }
-
-    // Trigger auto-advance countdown
-    startAutoAdvanceTimer();
   };
 
   // -------------------------------------------------------------
-  // Move to Next Question or Complete Quiz
+  // Keyboard Shortcuts (1-4 or A-D to select, Enter to submit/advance)
   // -------------------------------------------------------------
-  const handleNextQuestion = () => {
-    if (autoAdvanceTimerRef.current) {
-      clearInterval(autoAdvanceTimerRef.current);
-    }
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // If user presses Enter
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (isSubmittedRef.current) {
+          handleNextQuestion();
+        } else if (selectedOptionRef.current !== null) {
+          handleSubmitAnswer();
+        }
+        return;
+      }
 
-    if (currentQIndex < totalQuestions - 1) {
-      setCurrentQIndex((prev) => prev + 1);
-    } else {
-      // Completed all questions!
-      isFinishedRef.current = true;
-      onFinishQuiz();
-    }
-  };
+      // If already submitted, ignore selection keys
+      if (isSubmittedRef.current) return;
+
+      const key = e.key.toUpperCase();
+      if (key === "1" || key === "A") {
+        handleSelectOption(0);
+      } else if (key === "2" || key === "B") {
+        handleSelectOption(1);
+      } else if (key === "3" || key === "C") {
+        handleSelectOption(2);
+      } else if (key === "4" || key === "D") {
+        handleSelectOption(3);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleNextQuestion, handleSubmitAnswer]);
 
   // -------------------------------------------------------------
-  // Anti-Cheat & Security
+  // Anti-Cheat & Security Event Listeners
   // -------------------------------------------------------------
   useEffect(() => {
     const handleVisibility = () => {
@@ -290,7 +399,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
             setShowWarningModal(false);
             setShowDisqualifiedModal(true);
             setTimeout(() => {
-              onFinishQuiz();
+              onFinishQuizRef.current();
             }, 2500);
           }
           return next;
@@ -308,27 +417,18 @@ export const QuizPage: React.FC<QuizPageProps> = ({
       showSecurityNotice("🔒 Copying question content is prohibited.");
     };
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "F12" || ((e.ctrlKey || e.metaKey) && ["c", "v", "x", "u", "a", "s", "p"].includes(e.key.toLowerCase()))) {
-        e.preventDefault();
-        showSecurityNotice("🔒 Inspection shortcuts and copying are disabled.");
-      }
-    };
-
     document.addEventListener("visibilitychange", handleVisibility);
     window.addEventListener("contextmenu", handleContextMenu);
     window.addEventListener("copy", handleCopy);
-    window.addEventListener("keydown", handleKeyDown);
 
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("copy", handleCopy);
-      window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onFinishQuiz]);
+  }, []);
 
-  // Visual Timer Ring Metrics
+  // Visual Timer Metrics
   const isTimeExpiring = localTimeRemaining <= 5 && isTimerActive;
   const isTimeWarning = localTimeRemaining <= 10 && !isTimeExpiring && isTimerActive;
   const timerRadius = 20;
@@ -336,13 +436,13 @@ export const QuizPage: React.FC<QuizPageProps> = ({
   const progressRatio = Math.max(0, Math.min(1, localTimeRemaining / duration));
   const timerStrokeOffset = timerCircumference - progressRatio * timerCircumference;
 
-  // Potential Speed Score Preview
+  // Potential Score Preview
   const potentialScore = calculateSpeedScore(true, localTimeRemaining, duration);
   const optionLetters = ["A", "B", "C", "D"];
   const progressPercent = (questionNumber / totalQuestions) * 100;
 
   // Rank in live leaderboard
-  const myRankEntry = gameState.leaderboard.find((entry) => entry.id === currentPlayer.id);
+  const myRankEntry = gameState.leaderboard?.find((entry) => entry.id === currentPlayer.id);
   const myRank = myRankEntry?.rank ?? 1;
 
   return (
@@ -361,7 +461,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
           </div>
         )}
 
-        {/* Top Player HUD */}
+        {/* Top Player Status HUD */}
         <div className="bg-white rounded-2xl shadow-sm border border-amber-200/80 p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-3.5 w-full sm:w-auto">
             <div className="w-10 h-10 rounded-xl bg-amber-600 text-white font-bold flex items-center justify-center shadow-xs">
@@ -369,28 +469,35 @@ export const QuizPage: React.FC<QuizPageProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-extrabold text-stone-900 text-sm sm:text-base">{currentPlayer.name}</span>
+                <span className="font-extrabold text-stone-900 text-sm sm:text-base">
+                  {currentPlayer.name}
+                </span>
                 <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.5 rounded-full border border-amber-300">
                   Rank #{myRank}
                 </span>
               </div>
               <p className="text-xs text-stone-500 font-mono">
-                Total Points: <strong className="text-amber-800 font-bold">{currentPlayer.totalScore.toFixed(2)} pts</strong>
-                <span className="ml-2 text-stone-400">({currentPlayer.correctCount} Correct)</span>
+                Total Score:{" "}
+                <strong className="text-amber-800 font-bold">
+                  {currentPlayer.totalScore.toFixed(2)} pts
+                </strong>
+                <span className="ml-2 text-stone-400">
+                  ({currentPlayer.correctCount} Correct)
+                </span>
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end border-t sm:border-t-0 pt-2 sm:pt-0 border-stone-100">
-            {/* Anti-Cheat Monitor */}
+            {/* Anti-Cheat Guard */}
             <div className="flex items-center gap-1.5 bg-stone-100 text-stone-700 px-3 py-1.5 rounded-xl text-xs font-semibold">
               <Lock className="w-3.5 h-3.5 text-stone-500" />
-              <span>Anti-Cheat Guard Active</span>
+              <span>Fair Play Guard Active</span>
             </div>
 
-            {/* Current Question Badge */}
-            <div className="text-xs font-bold text-amber-900 bg-amber-100 px-3 py-1.5 rounded-xl border border-amber-300">
-              Q{questionNumber} of {totalQuestions}
+            {/* Question Counter Pill */}
+            <div className="text-xs font-bold text-amber-900 bg-amber-100 px-3.5 py-1.5 rounded-xl border border-amber-300">
+              Question {questionNumber} of {totalQuestions}
             </div>
           </div>
         </div>
@@ -400,9 +507,11 @@ export const QuizPage: React.FC<QuizPageProps> = ({
           <div className="flex items-center justify-between text-xs text-stone-500 font-medium mb-2">
             <span className="font-bold text-stone-700 flex items-center gap-1.5">
               <span>Question {questionNumber} of {totalQuestions}</span>
-              <span className="text-stone-400">• Precision Speed Round</span>
+              <span className="text-stone-400">• Speed Round</span>
             </span>
-            <span className="font-bold text-amber-800">{Math.round(progressPercent)}% Completed</span>
+            <span className="font-bold text-amber-800">
+              {Math.round(progressPercent)}% Completed
+            </span>
           </div>
 
           <div className="w-full bg-stone-200 h-2.5 rounded-full overflow-hidden mb-3">
@@ -412,13 +521,11 @@ export const QuizPage: React.FC<QuizPageProps> = ({
             ></div>
           </div>
 
-          {/* Sequential Step Dots */}
+          {/* Step Indicator Dots */}
           <div className="grid grid-cols-15 gap-1">
             {Array.from({ length: totalQuestions }).map((_, idx) => {
               const isCurrent = idx === currentQIndex;
               const isPast = idx < currentQIndex;
-              const ans = currentPlayer.answers?.[questionsList[idx]?.id];
-              const wasCorrect = ans?.isCorrect;
 
               return (
                 <div
@@ -427,9 +534,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                     isCurrent
                       ? "bg-amber-600 ring-2 ring-amber-400 shadow scale-110"
                       : isPast
-                      ? wasCorrect
-                        ? "bg-emerald-600"
-                        : "bg-red-400"
+                      ? "bg-emerald-600"
                       : "bg-stone-200"
                   }`}
                   title={`Question ${idx + 1}`}
@@ -445,7 +550,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
             className="bg-white rounded-3xl shadow-xl border-2 border-amber-200/90 overflow-hidden relative"
             id="active-question-card"
           >
-            {/* Decorative Pookkalam Background */}
+            {/* Decorative Background Art */}
             <div className="absolute top-0 right-0 -mt-16 -mr-16 opacity-10 pointer-events-none">
               <PookkalamArt size={220} />
             </div>
@@ -466,7 +571,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
 
               {/* 20s High-Precision Countdown Timer */}
               <div className="flex items-center gap-3">
-                {!isReviewMode && (
+                {!isSubmitted && (
                   <div className="hidden sm:flex items-center gap-1.5 bg-amber-950/80 border border-amber-500/30 px-3 py-1.5 rounded-xl text-xs font-mono font-bold text-yellow-300">
                     <Zap className="w-3.5 h-3.5 text-yellow-400 animate-pulse" />
                     <span>Speed Value: +{potentialScore.toFixed(2)} pts</span>
@@ -509,13 +614,15 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                       />
                     </svg>
                     <Timer
-                      className={`w-4 h-4 absolute ${isTimeExpiring ? "text-red-400" : "text-amber-300"}`}
+                      className={`w-4 h-4 absolute ${
+                        isTimeExpiring ? "text-red-400" : "text-amber-300"
+                      }`}
                     />
                   </div>
 
                   <div className="text-right">
                     <div className="text-[10px] uppercase font-bold tracking-wider opacity-80">
-                      {isTimeExpiring ? "Hurry!" : "Countdown"}
+                      {isTimeExpiring ? "Hurry!" : isSubmitted ? "Locked" : "Countdown"}
                     </div>
                     <div className="font-mono font-black text-base sm:text-lg leading-none">
                       {localTimeRemaining.toFixed(1)}s
@@ -525,7 +632,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
               </div>
             </div>
 
-            {/* Question Text */}
+            {/* Question Text & Options Body */}
             <div className="p-6 sm:p-8">
               <h2 className="text-lg sm:text-xl font-bold text-stone-900 leading-relaxed mb-6 select-none">
                 {currentQ.question}
@@ -535,25 +642,30 @@ export const QuizPage: React.FC<QuizPageProps> = ({
               <div className="space-y-3.5">
                 {currentQ.options.map((optText, optIdx) => {
                   const isSelected = selectedOption === optIdx;
-                  const isLocked = isReviewMode || selectedOption !== null;
                   const letter = optionLetters[optIdx];
                   const isCorrectAnswer = currentQ.correctIndex === optIdx;
 
-                  let cardStyle = "bg-white hover:bg-stone-50 border-stone-200 text-stone-800 hover:border-amber-300";
-                  let badgeStyle = "bg-stone-100 text-stone-700 group-hover:bg-amber-100 group-hover:text-amber-900";
+                  let cardStyle =
+                    "bg-white hover:bg-stone-50 border-stone-200 text-stone-800 hover:border-amber-400 hover:shadow-xs";
+                  let badgeStyle =
+                    "bg-stone-100 text-stone-700 group-hover:bg-amber-100 group-hover:text-amber-900";
 
-                  if (isReviewMode) {
+                  if (isSubmitted) {
                     if (isCorrectAnswer) {
-                      cardStyle = "bg-emerald-50 border-emerald-500 text-emerald-950 font-bold ring-2 ring-emerald-400/40 shadow-sm";
+                      cardStyle =
+                        "bg-emerald-50 border-emerald-500 text-emerald-950 font-bold ring-2 ring-emerald-400/40 shadow-sm";
                       badgeStyle = "bg-emerald-600 text-white";
                     } else if (isSelected && !isCorrectAnswer) {
-                      cardStyle = "bg-red-50 border-red-500 text-red-950 font-bold line-through";
+                      cardStyle =
+                        "bg-red-50 border-red-500 text-red-950 font-bold line-through";
                       badgeStyle = "bg-red-600 text-white";
                     } else {
                       cardStyle = "bg-stone-50 border-stone-200 text-stone-400 opacity-60";
+                      badgeStyle = "bg-stone-200 text-stone-500";
                     }
                   } else if (isSelected) {
-                    cardStyle = "bg-amber-50/95 border-amber-500 text-amber-950 shadow-md ring-2 ring-amber-400/40";
+                    cardStyle =
+                      "bg-amber-50/95 border-amber-500 text-amber-950 shadow-md ring-2 ring-amber-400/50 font-semibold";
                     badgeStyle = "bg-amber-500 text-white shadow-xs";
                   }
 
@@ -561,38 +673,51 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                     <button
                       key={optIdx}
                       id={`opt-${questionNumber}-${letter}`}
+                      type="button"
                       onClick={() => handleSelectOption(optIdx)}
-                      disabled={isLocked}
+                      disabled={isSubmitted}
                       className={`w-full p-4 rounded-2xl text-left transition-all border-2 flex items-center justify-between select-none ${cardStyle} ${
-                        !isLocked ? "cursor-pointer group hover:scale-[1.008]" : "cursor-default"
+                        !isSubmitted
+                          ? "cursor-pointer group hover:scale-[1.006]"
+                          : "cursor-default"
                       }`}
                     >
                       <div className="flex items-center gap-3.5">
-                        <span className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold text-sm transition-colors ${badgeStyle}`}>
+                        <span
+                          className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold text-sm transition-colors ${badgeStyle}`}
+                        >
                           {letter}
                         </span>
-                        <span className="text-sm sm:text-base font-medium select-none">{optText}</span>
+                        <span className="text-sm sm:text-base font-medium select-none">
+                          {optText}
+                        </span>
                       </div>
 
                       <div className="flex items-center gap-2">
-                        {isReviewMode && isCorrectAnswer && (
+                        {/* Revealed feedback badges */}
+                        {isSubmitted && isCorrectAnswer && (
                           <span className="text-[11px] uppercase font-extrabold bg-emerald-600 text-white px-2.5 py-1 rounded-full flex items-center gap-1 shadow-xs">
                             <CheckCircle2 className="w-3.5 h-3.5" /> Correct
                           </span>
                         )}
-                        {isReviewMode && isSelected && !isCorrectAnswer && (
+                        {isSubmitted && isSelected && !isCorrectAnswer && (
                           <span className="text-[11px] uppercase font-extrabold bg-red-600 text-white px-2.5 py-1 rounded-full flex items-center gap-1 shadow-xs">
                             <XCircle className="w-3.5 h-3.5" /> Your Choice
                           </span>
                         )}
 
-                        {!isReviewMode && (
+                        {/* Interactive selection radio (before submission) */}
+                        {!isSubmitted && (
                           <div
-                            className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
-                              isSelected ? "border-amber-600 bg-amber-600" : "border-stone-300"
+                            className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
+                              isSelected
+                                ? "border-amber-600 bg-amber-600 shadow-sm"
+                                : "border-stone-300 group-hover:border-amber-400 bg-stone-50"
                             }`}
                           >
-                            {isSelected && <div className="w-2 h-2 rounded-full bg-white"></div>}
+                            {isSelected && (
+                              <Check className="w-3.5 h-3.5 text-white stroke-[3]" />
+                            )}
                           </div>
                         )}
                       </div>
@@ -601,8 +726,8 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                 })}
               </div>
 
-              {/* Cultural Context & Explanation */}
-              {isReviewMode && currentQ.explanation && (
+              {/* Cultural Context / Explanation (Shown after submission) */}
+              {isSubmitted && currentQ.explanation && (
                 <div className="mt-6 p-4 rounded-2xl bg-amber-50/80 border border-amber-300/80 text-xs text-stone-800 space-y-1 animate-fade-in">
                   <strong className="text-amber-900 font-bold flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 text-amber-600" />
@@ -613,52 +738,88 @@ export const QuizPage: React.FC<QuizPageProps> = ({
               )}
             </div>
 
-            {/* Footer Actions & Round Score */}
-            <div className="bg-stone-50 border-t border-stone-200 px-6 py-4 flex items-center justify-between flex-wrap gap-3">
-              {isReviewMode && roundFeedback ? (
-                <div className="flex items-center gap-2 text-xs font-bold">
-                  {roundFeedback.isCorrect ? (
-                    <span className="text-emerald-800 bg-emerald-100 border border-emerald-300 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-xs">
-                      <Zap className="w-4 h-4 text-emerald-600 fill-emerald-600" />
-                      <span>Speed Points Earned: <strong>+{roundFeedback.score.toFixed(2)} pts</strong></span>
-                      <span className="text-emerald-700 font-normal">({roundFeedback.timeRemaining.toFixed(1)}s left)</span>
+            {/* Footer Control Panel (Submit / Next Actions) */}
+            <div className="bg-stone-50 border-t border-stone-200 px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+              {/* Feedback Summary or Speed Tip */}
+              <div className="w-full sm:w-auto">
+                {isSubmitted && feedback ? (
+                  <div className="flex items-center gap-2 text-xs font-bold">
+                    {feedback.isCorrect ? (
+                      <span className="text-emerald-800 bg-emerald-100 border border-emerald-300 px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow-xs">
+                        <Zap className="w-4 h-4 text-emerald-600 fill-emerald-600" />
+                        <span>
+                          Points Earned:{" "}
+                          <strong className="font-mono text-emerald-950 font-black">
+                            +{feedback.score.toFixed(2)} pts
+                          </strong>
+                        </span>
+                        <span className="text-emerald-700 font-normal">
+                          ({feedback.timeRemaining.toFixed(1)}s remaining)
+                        </span>
+                      </span>
+                    ) : selectedOption === -1 ? (
+                      <span className="text-red-800 bg-red-100 border border-red-300 px-3.5 py-2 rounded-xl flex items-center gap-1.5">
+                        <Timer className="w-4 h-4 text-red-600" />
+                        <span>Time Expired (0.00 pts)</span>
+                      </span>
+                    ) : (
+                      <span className="text-red-800 bg-red-100 border border-red-300 px-3.5 py-2 rounded-xl flex items-center gap-1.5">
+                        <XCircle className="w-4 h-4 text-red-600" />
+                        <span>Incorrect Choice (0.00 pts)</span>
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-xs text-stone-500 flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span>
+                      {selectedOption === null
+                        ? "Select an option above (or press 1-4 / A-D), then click 'Submit Answer'"
+                        : "Choice selected! Click 'Submit Answer' (or press Enter) to lock it in"}
                     </span>
-                  ) : selectedOption === -1 ? (
-                    <span className="text-red-800 bg-red-100 border border-red-300 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
-                      <Timer className="w-4 h-4 text-red-600" />
-                      <span>Time Expired (0.00 pts)</span>
-                    </span>
-                  ) : (
-                    <span className="text-red-800 bg-red-100 border border-red-300 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
-                      <XCircle className="w-4 h-4 text-red-600" />
-                      <span>Incorrect Choice (0.00 pts)</span>
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <div className="text-xs text-stone-500 flex items-center gap-1.5">
-                  <Zap className="w-3.5 h-3.5 text-amber-600" />
-                  <span>⚡ Select fast to maximize your speed-decay points (up to 5.00 pts)</span>
-                </div>
-              )}
+                  </div>
+                )}
+              </div>
 
-              {/* Navigation button */}
-              {isReviewMode && (
-                <div className="flex items-center gap-2 ml-auto">
+              {/* Action Buttons: Submit / Next */}
+              <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+                {!isSubmitted ? (
+                  /* SUBMIT ANSWER BUTTON */
                   <button
-                    id="next-question-btn"
-                    onClick={handleNextQuestion}
-                    className="px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs sm:text-sm shadow-md transition-all flex items-center gap-2 cursor-pointer group"
+                    id="submit-answer-btn"
+                    type="button"
+                    onClick={handleSubmitAnswer}
+                    disabled={selectedOption === null || isSubmitting}
+                    className={`w-full sm:w-auto px-7 py-3.5 rounded-2xl font-black text-sm shadow-md transition-all flex items-center justify-center gap-2 ${
+                      selectedOption !== null && !isSubmitting
+                        ? "bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 hover:from-amber-700 hover:to-amber-900 text-white shadow-amber-600/30 hover:shadow-xl cursor-pointer transform active:scale-95 ring-2 ring-amber-400 animate-pulse"
+                        : "bg-stone-200 text-stone-400 cursor-not-allowed border border-stone-300"
+                    }`}
                   >
-                    <span>{isLastQuestion ? "View Final Results 🏆" : "Next Question"}</span>
-                    <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                    <span>Lock In & Submit Answer</span>
+                    <ArrowRight className="w-4 h-4" />
                   </button>
+                ) : (
+                  /* NEXT QUESTION BUTTON */
+                  <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                    <button
+                      id="next-question-btn"
+                      type="button"
+                      onClick={handleNextQuestion}
+                      className="w-full sm:w-auto px-7 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold text-sm shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 cursor-pointer group transform active:scale-95"
+                    >
+                      <span>
+                        {isLastQuestion ? "Finish Quiz & View Results 🏆" : "Next Question"}
+                      </span>
+                      <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                    </button>
 
-                  <span className="text-[11px] text-stone-400 font-mono">
-                    (Auto in {autoAdvanceSeconds}s)
-                  </span>
-                </div>
-              )}
+                    <span className="text-[11px] text-stone-400 font-mono hidden sm:inline-block">
+                      ({autoAdvanceSeconds}s)
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -673,7 +834,9 @@ export const QuizPage: React.FC<QuizPageProps> = ({
                 <ShieldAlert className="w-7 h-7 animate-bounce text-red-600" />
               </div>
               <div>
-                <h3 className="text-lg font-extrabold text-red-950">Security Violation Detected!</h3>
+                <h3 className="text-lg font-extrabold text-red-950">
+                  Security Violation Detected!
+                </h3>
                 <span className="text-xs bg-red-100 text-red-800 font-bold px-2 py-0.5 rounded-full border border-red-300">
                   1st Warning (Final Warning)
                 </span>
@@ -682,13 +845,14 @@ export const QuizPage: React.FC<QuizPageProps> = ({
 
             <div className="p-3.5 bg-red-50/80 rounded-2xl border border-red-200 text-xs text-red-900 leading-relaxed space-y-2">
               <p>
-                <strong>Tab or Application Switch Identified:</strong> You minimized the browser or opened another application.
+                <strong>Tab or Application Switch Identified:</strong> You minimized the
+                browser or switched to another window.
               </p>
               <p>
                 To maintain fair play, <strong>external lookups are strictly prohibited</strong>.
               </p>
               <p className="font-bold text-red-700">
-                ⚠️ A 2nd violation will terminate your session and submit your score.
+                ⚠️ A 2nd violation will terminate your session and submit your current score.
               </p>
             </div>
 
@@ -715,7 +879,9 @@ export const QuizPage: React.FC<QuizPageProps> = ({
 
             <div>
               <h3 className="text-xl font-extrabold text-red-950">Session Terminated</h3>
-              <p className="text-xs text-red-700 font-semibold mt-1">Multiple Tab Switch Violations</p>
+              <p className="text-xs text-red-700 font-semibold mt-1">
+                Multiple Tab Switch Violations
+              </p>
             </div>
 
             <p className="text-xs text-stone-600 leading-relaxed">
@@ -724,7 +890,7 @@ export const QuizPage: React.FC<QuizPageProps> = ({
 
             <div className="p-3 bg-stone-100 rounded-xl text-xs font-mono text-stone-700 flex items-center justify-center gap-2">
               <div className="w-3 h-3 rounded-full border-2 border-red-600 border-t-transparent animate-spin"></div>
-              <span>Submitting official score to leaderboard...</span>
+              <span>Submitting score to leaderboard...</span>
             </div>
           </div>
         </div>

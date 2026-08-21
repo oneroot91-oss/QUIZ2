@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Trophy,
   Zap,
@@ -11,10 +11,13 @@ import {
   Play,
   Flame,
   CheckCircle2,
-  Lock
+  Lock,
+  Smartphone,
+  Award
 } from "lucide-react";
 import { GameState, Player } from "../types";
 import { PookkalamArt } from "./PookkalamArt";
+import { isDeviceCompletedQuiz, getDeviceCompletionDetails, DeviceCompletionData } from "../lib/deviceTracker";
 
 interface LandingPageProps {
   currentPlayer?: Player | null;
@@ -23,6 +26,7 @@ interface LandingPageProps {
   onJoinQuiz?: (name: string) => Promise<void> | void;
   onStartPlaying?: () => void;
   onViewLeaderboard: () => void;
+  onClearPlayerSession?: () => void;
   savedPlayerName?: string;
   isJoining?: boolean;
 }
@@ -34,16 +38,29 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onJoinQuiz,
   onStartPlaying,
   onViewLeaderboard,
+  onClearPlayerSession,
   savedPlayerName,
   isJoining = false,
 }) => {
   const [name, setName] = useState(currentPlayer?.name || savedPlayerName || "");
   const [error, setError] = useState<string | null>(null);
+  const [deviceDetails, setDeviceDetails] = useState<DeviceCompletionData>(() => getDeviceCompletionDetails());
+
+  useEffect(() => {
+    setDeviceDetails(getDeviceCompletionDetails());
+    setName(currentPlayer?.name || savedPlayerName || "");
+  }, [currentPlayer, savedPlayerName]);
+
+  const isDeviceLocked = deviceDetails.isCompleted || isDeviceCompletedQuiz();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
       setError("Please enter your name to register on the leaderboard.");
+      return;
+    }
+    if (isDeviceLocked) {
+      setError("This device has already completed its quiz attempt.");
       return;
     }
     setError(null);
@@ -81,8 +98,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </h1>
 
             <p className="text-sm sm:text-base text-amber-100/90 leading-relaxed mb-6 font-light">
-              Experience the fast-paced cultural showdown of Kerala! Compete simultaneously with colleagues across 15 synchronized questions. 
-              <strong> The faster you answer correctly, the higher your score!</strong>
+              Experience the fast-paced cultural showdown of Kerala! Compete with colleagues across 15 synchronized questions. 
+              <strong> The faster you answer correctly, the higher your speed score!</strong>
             </p>
 
             {/* Core Game Mechanics Pill Badges */}
@@ -102,18 +119,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   <Zap className="w-5 h-5" />
                 </div>
                 <div>
-                  <span className="text-[11px] text-emerald-300 uppercase tracking-wider font-semibold block">Speed Decay</span>
+                  <span className="text-[11px] text-emerald-300 uppercase tracking-wider font-semibold block">Speed Scoring</span>
                   <strong className="text-xs sm:text-sm text-white">Max 5.00 Pts / Q</strong>
                 </div>
               </div>
 
               <div className="bg-amber-950/80 border border-amber-500/30 rounded-2xl p-3 flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-amber-400/20 text-amber-300 flex items-center justify-center shrink-0">
-                  <Users className="w-5 h-5" />
+                  <Smartphone className="w-5 h-5" />
                 </div>
                 <div>
-                  <span className="text-[11px] text-amber-300 uppercase tracking-wider font-semibold block">Multiplayer</span>
-                  <strong className="text-xs sm:text-sm text-white">{gameState.connectedPlayersCount} Live Players</strong>
+                  <span className="text-[11px] text-amber-300 uppercase tracking-wider font-semibold block">Fair Play</span>
+                  <strong className="text-xs sm:text-sm text-white">1 Attempt Per Phone</strong>
                 </div>
               </div>
             </div>
@@ -123,8 +140,80 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Main Registration & Game Entry Card (7 cols) */}
           <div className="lg:col-span-7 bg-white rounded-3xl p-6 sm:p-8 shadow-xl border border-amber-200/80" id="player-registration-card">
-            {currentPlayer ? (
-              // Already Registered State
+            {isDeviceLocked ? (
+              // 🔒 DEVICE COMPLETED LOCKOUT STATE
+              <div className="space-y-6 animate-fade-in">
+                <div className="p-6 rounded-3xl bg-gradient-to-br from-amber-50 via-amber-100/50 to-stone-50 border-2 border-amber-400 shadow-sm space-y-4">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-600 text-white flex items-center justify-center shadow-md shadow-amber-600/30 shrink-0">
+                      <Lock className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-black text-amber-900 uppercase tracking-wider">Attempt Completed</span>
+                        <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2 py-0.5 rounded-full border border-emerald-300">
+                          15 Questions Recorded
+                        </span>
+                      </div>
+                      <h3 className="text-xl font-black text-stone-900 mt-0.5">
+                        {deviceDetails.playerName || currentPlayer?.name || "Participant"}
+                      </h3>
+                    </div>
+                  </div>
+
+                  {/* Summary Stats Pill Box */}
+                  <div className="grid grid-cols-2 gap-3 pt-2">
+                    <div className="bg-white/90 p-3 rounded-2xl border border-amber-200 text-center">
+                      <span className="text-[10px] text-stone-500 font-bold uppercase tracking-wider block">Final Score</span>
+                      <strong className="text-2xl font-black text-amber-800 font-mono">
+                        {(deviceDetails.totalScore ?? currentPlayer?.totalScore ?? 0).toFixed(2)} <span className="text-xs font-normal">pts</span>
+                      </strong>
+                    </div>
+
+                    <div className="bg-white/90 p-3 rounded-2xl border border-amber-200 text-center">
+                      <span className="text-[10px] text-stone-500 font-bold uppercase tracking-wider block">Correct Answers</span>
+                      <strong className="text-2xl font-black text-emerald-700 font-mono">
+                        {deviceDetails.correctCount ?? currentPlayer?.correctCount ?? 0} <span className="text-xs text-stone-500 font-normal">/ 15</span>
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-2xl bg-amber-900/5 border border-amber-300/80 text-xs text-stone-700 space-y-1">
+                    <div className="flex items-center gap-1.5 font-bold text-amber-950">
+                      <Smartphone className="w-4 h-4 text-amber-700" />
+                      <span>Device Attempt Limit Enforced</span>
+                    </div>
+                    <p className="text-[11px] text-stone-600 leading-relaxed">
+                      To preserve the integrity and absolute fairness of the hospital competition leaderboard, each physical phone is strictly permitted a single official 15-question quiz attempt.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={onViewLeaderboard}
+                    className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-amber-600 to-amber-800 hover:from-amber-700 hover:to-amber-900 text-white font-extrabold text-sm sm:text-base shadow-lg transition flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Trophy className="w-5 h-5 text-yellow-300" />
+                    <span>View Official Live Standings</span>
+                    <ArrowRight className="w-5 h-5" />
+                  </button>
+
+                  {onClearPlayerSession && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClearPlayerSession();
+                        setDeviceDetails({ isCompleted: false });
+                        setName("");
+                      }}
+                      className="w-full py-2.5 px-4 rounded-xl border border-stone-300 hover:bg-stone-100 text-stone-600 hover:text-stone-900 font-semibold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Reset Attempt on this Device / Enter as New Player</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : currentPlayer ? (
+              // Already Registered / In Progress State
               <div className="space-y-6">
                 <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-50 to-amber-100/60 border-2 border-amber-300 flex items-center justify-between">
                   <div className="flex items-center gap-3.5">
@@ -145,36 +234,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
                   <div className="text-right">
                     <span className="text-xs bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full border border-emerald-300">
-                      Active on Leaderboard
+                      Active
                     </span>
                   </div>
                 </div>
 
                 {/* Match Status & Enter Action */}
                 <div className="p-5 rounded-2xl border border-stone-200 bg-stone-50/70 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-stone-500">Live Match Status</span>
-                    <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                      gameState.status === "question_active"
-                        ? "bg-emerald-100 text-emerald-800 border border-emerald-300 animate-pulse"
-                        : gameState.status === "question_review"
-                        ? "bg-amber-100 text-amber-800 border border-amber-300"
-                        : "bg-blue-100 text-blue-800 border border-blue-300"
-                    }`}>
-                      {gameState.status === "question_active"
-                        ? `⚡ Question ${gameState.currentQuestionIndex + 1} In Progress`
-                        : gameState.status === "question_review"
-                        ? `⏱️ Reviewing Question ${gameState.currentQuestionIndex + 1}`
-                        : gameState.status === "game_over"
-                        ? "🏆 Match Completed"
-                        : "🟢 Game Ready"}
-                    </span>
-                  </div>
-
                   <p className="text-xs text-stone-600 leading-relaxed">
-                    {gameState.status === "question_active"
-                      ? `Question ${gameState.currentQuestionIndex + 1} of ${gameState.totalQuestions} is currently live. Jump in to submit your answer before time runs out!`
-                      : "Questions are synchronized in real-time. Enter the live arena now to compete for the top podium!"}
+                    You are registered and ready. Enter the live speed challenge arena now to lock in your answers across all 15 questions!
                   </p>
 
                   <button
@@ -183,40 +251,40 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 hover:from-amber-700 hover:to-amber-900 text-white font-extrabold text-base shadow-lg hover:shadow-xl transition flex items-center justify-center gap-2.5 cursor-pointer transform active:scale-98"
                   >
                     <Play className="w-5 h-5 fill-current" />
-                    <span>Enter Live Quiz Arena</span>
+                    <span>Enter Quiz Arena</span>
                     <ArrowRight className="w-5 h-5" />
                   </button>
-                </div>
 
-                {/* Change name option */}
-                <div className="text-center pt-1">
-                  <button
-                    onClick={() => {
-                      setName("");
-                      setError(null);
-                    }}
-                    className="text-xs text-stone-500 hover:text-amber-800 underline transition cursor-pointer"
-                  >
-                    Change Name / Register as Different Player
-                  </button>
+                  {onClearPlayerSession && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClearPlayerSession();
+                        setName("");
+                      }}
+                      className="w-full py-2.5 px-4 rounded-xl border border-stone-300 hover:bg-stone-100 text-stone-600 hover:text-stone-900 font-semibold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Not {currentPlayer.name}? Register as a different player / Switch Name</span>
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
-              // Individual Entry Registration Form
+              // Streamlined Individual Entry Registration Form (Enters Quiz Immediately)
               <div>
                 <div className="mb-6">
                   <h2 className="text-xl sm:text-2xl font-bold text-stone-900 flex items-center gap-2">
-                    <span>Individual Player Entry</span>
+                    <span>Enter Quiz Competition</span>
                     <span className="text-amber-600">✍️</span>
                   </h2>
                   <p className="text-xs text-stone-500 mt-1">
-                    Enter your name to automatically appear on the global leaderboard and participate in the real-time match.
+                    Enter your full name to start the 15-question speed challenge. Each phone is granted 1 official competition attempt.
                   </p>
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-5">
                   {error && (
-                    <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
+                    <div className="p-3.5 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2.5">
                       <span className="font-bold">⚠️</span>
                       <span>{error}</span>
                     </div>
@@ -267,7 +335,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       <span>Registering Player...</span>
                     ) : (
                       <>
-                        <span>Join Competition & Enter Arena</span>
+                        <span>Start Quiz Challenge</span>
                         <ArrowRight className="w-4 h-4" />
                       </>
                     )}
@@ -390,15 +458,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs text-stone-300">
             <div className="p-3.5 rounded-2xl bg-stone-800/80 border border-stone-700">
               <strong className="text-amber-300 block mb-1">⏱️ Synchronized 20s Timer</strong>
-              All players receive questions simultaneously with automatic lockout when the timer reaches 0s.
+              All players receive questions with a live countdown timer and automatic lockout when the timer reaches 0s.
             </div>
             <div className="p-3.5 rounded-2xl bg-stone-800/80 border border-stone-700">
-              <strong className="text-amber-300 block mb-1">🔒 Tab & App Detection</strong>
-              Switching tabs, minimizing Chrome, or opening external AI assistants triggers automatic warnings and disqualification.
+              <strong className="text-amber-300 block mb-1">📱 1 Attempt Per Phone</strong>
+              Each device is tied to a single 15-question run to prevent multiple retries and protect leaderboard integrity.
             </div>
             <div className="p-3.5 rounded-2xl bg-stone-800/80 border border-stone-700">
               <strong className="text-amber-300 block mb-1">⚡ Speed-Decay Points</strong>
-              Maximum 5 points awarded based on answer speed. Unanswered questions receive 0 points.
+              Maximum 5.00 points awarded based on answer speed: `Score = 5 × (Time Left / 20)`.
             </div>
           </div>
         </div>
@@ -406,3 +474,4 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     </div>
   );
 };
+
