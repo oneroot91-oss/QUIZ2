@@ -139,15 +139,23 @@ export function useRealtimeQuiz(
     connectWS();
 
     const pollInterval = setInterval(() => {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      fetchRestState();
+    }, 2500);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
         fetchRestState();
       }
-    }, 4000);
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", fetchRestState);
 
     return () => {
       isUnmounted = true;
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
       clearInterval(pollInterval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", fetchRestState);
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -294,7 +302,11 @@ export function useRealtimeQuiz(
         });
         const contentType = res.headers.get("content-type");
         if (res.ok && contentType && contentType.includes("application/json")) {
-          return await res.json();
+          const data = await res.json();
+          if (data.player && onPlayerUpdated) {
+            onPlayerUpdated(data.player);
+          }
+          return data;
         }
       } catch (err) {
         // Offline fallback

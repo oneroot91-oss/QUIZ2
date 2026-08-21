@@ -40,11 +40,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onViewLeaderboard,
   onClearPlayerSession,
   savedPlayerName,
-  isJoining = false,
+  isJoining: propIsJoining = false,
 }) => {
   const [name, setName] = useState(currentPlayer?.name || savedPlayerName || "");
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [deviceDetails, setDeviceDetails] = useState<DeviceCompletionData>(() => getDeviceCompletionDetails());
+
+  const isJoining = propIsJoining || submitting;
 
   useEffect(() => {
     setDeviceDetails(getDeviceCompletionDetails());
@@ -64,6 +67,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       return;
     }
     setError(null);
+    setSubmitting(true);
     try {
       const joinAction = onJoinGame || onJoinQuiz;
       if (typeof joinAction === "function") {
@@ -73,6 +77,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       }
     } catch (err: any) {
       setError(err?.message || "Failed to register. Please try again.");
+      setSubmitting(false);
     }
   };
 

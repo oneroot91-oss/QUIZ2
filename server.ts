@@ -575,14 +575,12 @@ function finishQuestionRound() {
 function submitPlayerAnswer(playerId: string, questionId: number, selectedOption: number, clientTimeRemaining?: number) {
   const questions = readQuestions();
   const settings = readSettings();
-  const currentQ = questions[gameEngine.currentQuestionIndex];
+  
+  // Find the target question by ID, or fallback to current index
+  const targetQ = questions.find((q) => q.id === questionId) || questions[gameEngine.currentQuestionIndex] || questions[0];
 
-  if (!currentQ || currentQ.id !== questionId) {
-    return { error: "Question not currently active." };
-  }
-
-  if (gameEngine.status !== "question_active") {
-    return { error: "Question round has closed." };
+  if (!targetQ) {
+    return { error: "Question not found." };
   }
 
   const players = readPlayers();
@@ -592,21 +590,18 @@ function submitPlayerAnswer(playerId: string, questionId: number, selectedOption
   }
 
   const player = players[playerIndex];
-
-  // Calculate actual remaining time based on server timestamp
   const duration = settings.questionDuration || 20;
-  const elapsedSeconds = (Date.now() - gameEngine.questionStartTime) / 1000;
-  const serverTimeRemaining = Math.max(0, Math.min(duration, duration - elapsedSeconds));
-  
-  // Use client time remaining if provided and reasonably close to server time (within 1.5s tolerance)
-  let effectiveTimeRemaining = serverTimeRemaining;
+
+  // Determine effective time remaining
+  let effectiveTimeRemaining = duration;
   if (typeof clientTimeRemaining === "number" && !isNaN(clientTimeRemaining)) {
-    if (Math.abs(clientTimeRemaining - serverTimeRemaining) < 2.0) {
-      effectiveTimeRemaining = Math.max(0, Math.min(duration, clientTimeRemaining));
-    }
+    effectiveTimeRemaining = Math.max(0, Math.min(duration, clientTimeRemaining));
+  } else if (gameEngine.status === "question_active" && gameEngine.questionStartTime) {
+    const elapsedSeconds = (Date.now() - gameEngine.questionStartTime) / 1000;
+    effectiveTimeRemaining = Math.max(0, Math.min(duration, duration - elapsedSeconds));
   }
 
-  const isCorrect = selectedOption === currentQ.correctIndex;
+  const isCorrect = selectedOption === targetQ.correctIndex;
   const speedScore = calculateSpeedScore(
     isCorrect,
     effectiveTimeRemaining,
@@ -615,7 +610,7 @@ function submitPlayerAnswer(playerId: string, questionId: number, selectedOption
   );
 
   const answerRecord = {
-    questionId: currentQ.id,
+    questionId: targetQ.id,
     selectedOption,
     timeRemaining: Math.round(effectiveTimeRemaining * 100) / 100,
     score: speedScore,
@@ -623,7 +618,8 @@ function submitPlayerAnswer(playerId: string, questionId: number, selectedOption
     answeredAt: new Date().toISOString(),
   };
 
-  player.answers[currentQ.id] = answerRecord;
+  if (!player.answers) player.answers = {};
+  player.answers[targetQ.id] = answerRecord;
   
   // Recompute player cumulative totals
   let totalScore = 0;
@@ -639,7 +635,7 @@ function submitPlayerAnswer(playerId: string, questionId: number, selectedOption
   player.lastActive = new Date().toISOString();
 
   // If player answered all questions, mark completed
-  if (player.answeredCount >= questions.length) {
+  if (player.answeredCount >= questions.length && questions.length > 0) {
     player.isCompleted = true;
     player.completedAt = new Date().toISOString();
   }
@@ -663,26 +659,21 @@ function submitPlayerAnswer(playerId: string, questionId: number, selectedOption
     }
   }
 
-  // Store in round engine answers
-  gameEngine.answersForCurrentQ[playerId] = {
-    playerId,
-    playerName: player.name,
-    selectedOption,
-    timeRemaining: answerRecord.timeRemaining,
-    score: speedScore,
-    isCorrect,
-    submittedAt: Date.now(),
-  };
-
-  broadcastGameState();
-
-  // If ALL connected online players have answered, conclude round early
-  const onlineNonAdminPlayers = Array.from(clients).filter(c => c.playerId && !c.isAdmin);
-  if (onlineNonAdminPlayers.length > 0 && onlineNonAdminPlayers.every(c => c.playerId && gameEngine.answersForCurrentQ[c.playerId])) {
-    setTimeout(() => {
-      finishQuestionRound();
-    }, 600);
+  // Store in round engine answers if synchronous mode is active
+  if (gameEngine.status === "question_active" && targetQ.id === questions[gameEngine.currentQuestionIndex]?.id) {
+    gameEngine.answersForCurrentQ[playerId] = {
+      playerId,
+      playerName: player.name,
+      selectedOption,
+      timeRemaining: answerRecord.timeRemaining,
+      score: speedScore,
+      isCorrect,
+      submittedAt: Date.now(),
+    };
   }
+
+  // Broadcast live leaderboard update immediately to ALL connected phones and screens
+  broadcastGameState();
 
   return {
     success: true,
@@ -690,6 +681,11 @@ function submitPlayerAnswer(playerId: string, questionId: number, selectedOption
     timeRemaining: answerRecord.timeRemaining,
     isCorrect,
     totalScore: player.totalScore,
+    correctCount: player.correctCount,
+    answeredCount: player.answeredCount,
+    correctIndex: targetQ.correctIndex,
+    explanation: targetQ.explanation,
+    player,
   };
 }
 
@@ -738,9 +734,9 @@ const handlePlayerJoin = (req: express.Request, res: express.Response) => {
   const players = readPlayers();
   const devices = readDevices();
 
-  // 1. Check if this device has already completed 15 questions
+  // 1. Check if this specific unique device has already completed 15 questions
   if (deviceId) {
-    const existingDevice = devices.find((d) => d.deviceId === deviceId || (deviceFingerprint && d.deviceFingerprint === deviceFingerprint));
+    const existingDevice = devices.find((d) => d.deviceId === deviceId);
     if (existingDevice && existingDevice.isCompleted) {
       res.status(403).json({
         error: "DEVICE_ALREADY_COMPLETED",
@@ -752,10 +748,10 @@ const handlePlayerJoin = (req: express.Request, res: express.Response) => {
     }
   }
 
-  // 2. Check if a player with this ID, deviceId, or exact Name already exists
+  // 2. Check if a player with this specific ID or exact name exists
   let player: PlayerRecord;
   const existingIdx = players.findIndex(
-    (p) => (playerId && p.id === playerId) || (deviceId && p.deviceId === deviceId) || p.name.toLowerCase() === trimmedName.toLowerCase()
+    (p) => (playerId && p.id === playerId) || (deviceId && p.deviceId === deviceId && p.name.toLowerCase() === trimmedName.toLowerCase())
   );
 
   if (existingIdx !== -1) {

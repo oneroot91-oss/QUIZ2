@@ -210,7 +210,7 @@ export default function App() {
 
       {/* Main View Area */}
       <main className="flex-1">
-        {currentView === "landing" && (
+        {(currentView === "landing" || ((currentView === "quiz" || currentView === "completion") && !currentPlayer)) && (
           <LandingPage
             currentPlayer={currentPlayer}
             gameState={gameState}
